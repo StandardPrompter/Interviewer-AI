@@ -208,10 +208,18 @@ export default function ResultsPage() {
                     </div>
                     <div className="space-y-4">
                         {Array.isArray(insights?.strengths) && insights.strengths.length > 0 ? (
-                            insights.strengths.map((strength, index) => (
+                            insights.strengths.map((strength: any, index) => (
                                 <div key={index} className="flex items-start gap-3 p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20">
                                     <CheckCircle2 className="w-5 h-5 text-emerald-400 mt-0.5 flex-shrink-0" />
-                                    <p className="text-slate-200">{strength}</p>
+                                    <div className="text-slate-200">
+                                        {typeof strength === 'string' ? strength : (
+                                            <>
+                                                {strength.issue && <span className="font-semibold block mb-1">{strength.issue}</span>}
+                                                {strength.example && <span className="text-slate-300 text-sm block">{strength.example}</span>}
+                                                {!strength.issue && !strength.example && JSON.stringify(strength)}
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                             ))
                         ) : (
@@ -230,10 +238,18 @@ export default function ResultsPage() {
                     </div>
                     <div className="space-y-4">
                         {Array.isArray(insights?.weaknesses) && insights.weaknesses.length > 0 ? (
-                            insights.weaknesses.map((weakness, index) => (
+                            insights.weaknesses.map((weakness: any, index) => (
                                 <div key={index} className="flex items-start gap-3 p-4 bg-amber-500/10 rounded-2xl border border-amber-500/20">
                                     <Target className="w-5 h-5 text-amber-400 mt-0.5 flex-shrink-0" />
-                                    <p className="text-slate-200">{weakness}</p>
+                                    <div className="text-slate-200">
+                                        {typeof weakness === 'string' ? weakness : (
+                                            <>
+                                                {weakness.issue && <span className="font-semibold block mb-1">{weakness.issue}</span>}
+                                                {weakness.example && <span className="text-slate-300 text-sm block">{weakness.example}</span>}
+                                                {!weakness.issue && !weakness.example && JSON.stringify(weakness)}
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                             ))
                         ) : (
@@ -252,10 +268,18 @@ export default function ResultsPage() {
                     </div>
                     <div className="space-y-4">
                         {Array.isArray(insights?.next_steps) && insights.next_steps.length > 0 ? (
-                            insights.next_steps.map((step, index) => (
+                            insights.next_steps.map((step: any, index) => (
                                 <div key={index} className="flex items-start gap-3 p-4 bg-blue-500/10 rounded-2xl border border-blue-500/20">
                                     <ArrowRight className="w-5 h-5 text-blue-400 mt-0.5 flex-shrink-0" />
-                                    <p className="text-slate-200">{step}</p>
+                                    <div className="text-slate-200">
+                                        {typeof step === 'string' ? step : (
+                                            <>
+                                                {step.issue && <span className="font-semibold block mb-1">{step.issue}</span>}
+                                                {step.example && <span className="text-slate-300 text-sm block">{step.example}</span>}
+                                                {!step.issue && !step.example && JSON.stringify(step)}
+                                            </>
+                                        )}
+                                    </div>
                                 </div>
                             ))
                         ) : (
