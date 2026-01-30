@@ -1,4 +1,6 @@
-# Interviewer Project
+# Interviewer-AI
+
+Realtime Voice to Voice AI
 
 ## Overview
 This project contains the backend and frontend for the AI Interviewer application.
