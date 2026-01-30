@@ -1,0 +1,204 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Voice Interviewer Agent Backend
+  
+  Architecture:
+  - API Gateway
+  - Lambda (Business Logic)
+  - DynamoDB (Agent State)
+
+Parameters:
+  OpenAIAPIKey:
+    Type: String
+    Description: "OpenAI API Key for Realtime API"
+    NoEcho: true
+
+Globals:
+  Function:
+    Timeout: 60
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref AgentStateTable
+        OPENAI_API_KEY: !Ref OpenAIAPIKey
+
+Resources:
+  # Specialized DynamoDB Tables
+  PersonaStorageTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: session_id
+        Type: String
+
+  CompanyResearchTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: company_url
+        Type: String
+
+  LinkedInResearchTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: linkedin_url
+        Type: String
+
+  InterviewTranscriptsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AWS::StackName}-transcripts-${AWS::AccountId}"
+
+  # Research Workflow Lambdas
+  InterviewerResearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.lambda_handler"]
+      Environment:
+        Variables:
+          SCRAPEDOG_API_KEY: "" 
+          LINKEDIN_TABLE_NAME: !Ref LinkedInResearchTable
+          PERSONA_TABLE_NAME: !Ref PersonaStorageTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LinkedInResearchTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PersonaStorageTable
+      Layers:
+        - !Ref CommonLayer
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./functions/interviewer_research
+      DockerTag: python3.11-v1
+
+  CompanyResearchFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.lambda_handler"]
+      Environment:
+        Variables:
+          PARALLEL_AI_API_KEY: ""
+          COMPANY_TABLE_NAME: !Ref CompanyResearchTable
+          PERSONA_TABLE_NAME: !Ref PersonaStorageTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CompanyResearchTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PersonaStorageTable
+      Layers:
+        - !Ref CommonLayer
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./functions/company_research
+      DockerTag: python3.11-v1
+
+  PersonaGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.lambda_handler"]
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Ref OpenAIAPIKey
+          PERSONA_TABLE_NAME: !Ref PersonaStorageTable
+          COMPANY_TABLE_NAME: !Ref CompanyResearchTable
+          LINKEDIN_TABLE_NAME: !Ref LinkedInResearchTable
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PersonaStorageTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref CompanyResearchTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref LinkedInResearchTable
+      Layers:
+        - !Ref CommonLayer
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./functions/persona_generator
+      DockerTag: python3.11-v1
+
+  PostInterviewInsightFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageConfig:
+        Command: ["app.lambda_handler"]
+      Environment:
+        Variables:
+          OPENAI_API_KEY: !Ref OpenAIAPIKey
+          TRANSCRIPT_BUCKET_NAME: !Ref InterviewTranscriptsBucket
+          PERSONA_TABLE_NAME: !Ref PersonaStorageTable
+      Policies:
+        - S3ReadPolicy:
+            BucketName: !Ref InterviewTranscriptsBucket
+        - DynamoDBCrudPolicy:
+            TableName: !Ref PersonaStorageTable
+      Events:
+        S3Upload:
+          Type: S3
+          Properties:
+            Bucket: !Ref InterviewTranscriptsBucket
+            Events: s3:ObjectCreated:Put
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: transcripts/
+      Layers:
+        - !Ref CommonLayer
+    Metadata:
+      Dockerfile: Dockerfile
+      DockerContext: ./functions/post_interview_insight
+      DockerTag: python3.11-v1
+
+  # Step Function
+  ResearchStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionSubstitutions:
+        InterviewerResearchArn: !GetAtt InterviewerResearchFunction.Arn
+        CompanyResearchArn: !GetAtt CompanyResearchFunction.Arn
+        PersonaGeneratorArn: !GetAtt PersonaGeneratorFunction.Arn
+      Definition:
+        StartAt: ParallelResearch
+        States:
+          ParallelResearch:
+            Type: Parallel
+            Next: GeneratePersona
+            Branches:
+              - StartAt: InterviewerResearch
+                States:
+                  InterviewerResearch:
+                    Type: Task
+                    Resource: "${InterviewerResearchArn}"
+                    End: true
+              - StartAt: CompanyResearch
+                States:
+                  CompanyResearch:
+                    Type: Task
+                    Resource: "${CompanyResearchArn}"
+                    End: true
+          GeneratePersona:
+            Type: Task
+            Resource: "${PersonaGeneratorArn}"
+            End: true
+      Policies:
+        - LambdaInvokePolicy:
+            FunctionName: !Ref InterviewerResearchFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref CompanyResearchFunction
+        - LambdaInvokePolicy:
+            FunctionName: !Ref PersonaGeneratorFunction
+
+Outputs:
+  ApiEndpoint:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
