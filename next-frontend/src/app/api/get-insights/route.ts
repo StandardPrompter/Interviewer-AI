@@ -24,7 +24,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const tableName = process.env.DYNAMODB_PERSONA_TABLE || 'persona_table';
+    const tableName = process.env.DYNAMODB_SUMMARY_TABLE || 'summary_table';
 
     const response = await docClient.send(
       new GetCommand({

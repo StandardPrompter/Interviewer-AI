@@ -47,6 +47,13 @@ Resources:
         Name: linkedin_url
         Type: String
 
+  SummaryTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: session_id
+        Type: String
+
   InterviewTranscriptsBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -136,11 +143,14 @@ Resources:
           OPENAI_API_KEY: !Ref OpenAIAPIKey
           TRANSCRIPT_BUCKET_NAME: !Ref InterviewTranscriptsBucket
           PERSONA_TABLE_NAME: !Ref PersonaStorageTable
+          SUMMARY_TABLE_NAME: !Ref SummaryTable
       Policies:
         - S3ReadPolicy:
             BucketName: !Ref InterviewTranscriptsBucket
         - DynamoDBCrudPolicy:
             TableName: !Ref PersonaStorageTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummaryTable
       Events:
         S3Upload:
           Type: S3
