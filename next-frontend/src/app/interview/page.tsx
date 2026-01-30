@@ -45,6 +45,7 @@ export default function InterviewPage() {
     const [isPaused, setIsPaused] = useState(false);
     const [isSavingTranscript, setIsSavingTranscript] = useState(false);
     const [aiStatus, setAiStatus] = useState<'listening' | 'thinking' | 'speaking'>('listening');
+    const [timeLeft, setTimeLeft] = useState(20 * 60); // 20 minutes in seconds
 
     const pcRef = useRef<RTCPeerConnection | null>(null);
     const dcRef = useRef<RTCDataChannel | null>(null);
@@ -418,6 +419,30 @@ export default function InterviewPage() {
         }
     }, [isConnected, hasStarted]);
 
+    // Timer Logic
+    useEffect(() => {
+        let interval: NodeJS.Timeout;
+        if (isConnected && !isPaused && timeLeft > 0) {
+            interval = setInterval(() => {
+                setTimeLeft((prev) => {
+                    if (prev <= 1) {
+                        clearInterval(interval);
+                        stopSession(); // Auto-end session
+                        return 0;
+                    }
+                    return prev - 1;
+                });
+            }, 1000);
+        }
+        return () => clearInterval(interval);
+    }, [isConnected, isPaused, timeLeft]);
+
+    const formatTime = (seconds: number) => {
+        const mins = Math.floor(seconds / 60);
+        const secs = seconds % 60;
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    };
+
     if (isLoadingSession) {
         return (
             <main className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-sans">
@@ -495,6 +520,13 @@ export default function InterviewPage() {
                         </div>
                         <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
                     </div>
+                    {/* Timer Display */}
+                    <div className="bg-slate-800 rounded-xl px-4 py-2 border border-slate-700/50 flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-blue-400" />
+                        <span className={`text-sm font-mono font-bold ${timeLeft < 60 ? 'text-red-400 animate-pulse' : 'text-slate-100'}`}>
+                            {formatTime(timeLeft)}
+                        </span>
+                    </div>
                 </div>
             </nav>
 
@@ -539,8 +571,8 @@ export default function InterviewPage() {
                                 {transcriptMessages.slice(-5).map((msg, idx) => (
                                     <div key={msg.id || idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                                         <div className={`max-w-[80%] rounded-xl px-4 py-2 ${msg.role === 'user'
-                                                ? 'bg-blue-600 text-white'
-                                                : 'bg-slate-700 text-slate-100'
+                                            ? 'bg-blue-600 text-white'
+                                            : 'bg-slate-700 text-slate-100'
                                             }`}>
                                             <p className="text-sm">{msg.content}</p>
                                             <p className="text-xs opacity-60 mt-1">
@@ -589,8 +621,8 @@ export default function InterviewPage() {
                     <button
                         onClick={togglePause}
                         className={`flex-1 h-14 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all active:scale-[0.98] ${isPaused
-                                ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-lg shadow-amber-500/20'
-                                : 'bg-blue-600 hover:bg-blue-700 text-white'
+                            ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-lg shadow-amber-500/20'
+                            : 'bg-blue-600 hover:bg-blue-700 text-white'
                             }`}
                     >
                         {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}

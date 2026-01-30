@@ -360,10 +360,11 @@ export default function LandingPage() {
 
               <div className="space-y-2">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest pl-1">
-                  Resume (PDF) <span className="text-slate-500 text-[9px]">(optional)</span>
+                  Resume (PDF) <span className="text-red-400">*</span>
                 </label>
                 <div className="relative">
                   <input
+                    required
                     type="file"
                     accept=".pdf"
                     onChange={(e) => setResumeFile(e.target.files ? e.target.files[0] : null)}
