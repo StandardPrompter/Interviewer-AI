@@ -60,8 +60,8 @@ export default function InterviewPage() {
     const userVideoRef = useRef<HTMLVideoElement | null>(null);
 
     // Proctoring State
-    // Initial stage is calibration because preparation is handled in /preparation
-    const [stage, setStage] = useState<'calibration' | 'interview' | 'terminated'>('calibration');
+    // Initial stage is interview because calibration is handled in /preparation
+    const [stage, setStage] = useState<'interview' | 'terminated'>('interview');
     const [gazeViolations, setGazeViolations] = useState(0);
     const [showGazeWarning, setShowGazeWarning] = useState(false);
 
@@ -475,7 +475,7 @@ export default function InterviewPage() {
         setIsPaused(false);
         setTranscriptMessages([]);
         setTranscriptionErrors([]);
-        setStage('calibration'); // Go back to calibration, not prep
+        setStage('interview'); // Go back to interview start
         setGazeViolations(0);
         currentAssistantMessageRef.current = null;
         setCurrentAssistantMessage(null);
@@ -581,9 +581,10 @@ export default function InterviewPage() {
     return (
         <main className="h-screen bg-slate-950 text-slate-100 font-sans flex flex-col overflow-hidden">
             {/* Gaze Tracker */}
-            {(stage === 'calibration' || stage === 'interview') && !isLoadingSession && (
+            {stage === 'interview' && !isLoadingSession && (
                 <GazeTracker
                     isActive={stage === 'interview'}
+                    skipCalibration={true}
                     onCalibrationComplete={() => {
                         setStage('interview');
                     }}

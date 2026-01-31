@@ -8,11 +8,12 @@ interface GazeTrackerProps {
     onGazeViolation?: () => void;
     onCalibrationComplete?: () => void;
     isActive: boolean;
+    skipCalibration?: boolean;
 }
 
-export default function GazeTracker({ onGazeViolation, onCalibrationComplete, isActive }: GazeTrackerProps) {
+export default function GazeTracker({ onGazeViolation, onCalibrationComplete, isActive, skipCalibration = false }: GazeTrackerProps) {
     const [scriptLoaded, setScriptLoaded] = useState(false);
-    const [isCalibrating, setIsCalibrating] = useState(true);
+    const [isCalibrating, setIsCalibrating] = useState(!skipCalibration);
     const [calibrationPoints, setCalibrationPoints] = useState<number>(0);
     const [gazeStatus, setGazeStatus] = useState<'safe' | 'warning' | 'calibrating'>('calibrating');
     const warningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -57,6 +58,11 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             window.webgazer.showVideo(false);
             window.webgazer.showFaceOverlay(false); // Disable face overlay to avoid MediaPipe
             window.webgazer.showFaceFeedbackBox(false); // Disable feedback box
+
+            // If skipping calibration, hide points immediately
+            if (skipCalibration) {
+                window.webgazer.showPredictionPoints(false);
+            }
 
             // Start the gaze tracker
             await window.webgazer.setGazeListener((data) => {

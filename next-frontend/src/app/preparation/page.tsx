@@ -3,7 +3,8 @@
 import React, { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import PrepCheck from '@/components/PrepCheck';
-import { Brain } from 'lucide-react';
+import GazeTracker from '@/components/GazeTracker';
+import { Brain, Camera } from 'lucide-react';
 
 function PreparationContent() {
     const router = useRouter();
@@ -16,6 +17,10 @@ function PreparationContent() {
     const [progress, setProgress] = useState(0);
     const [statusMessage, setStatusMessage] = useState("Initializing...");
     const [error, setError] = useState<string | null>(null);
+    const [isCalibrating, setIsCalibrating] = useState(false);
+    const [isCalibrated, setIsCalibrated] = useState(false);
+    const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
+    const videoRef = React.useRef<HTMLVideoElement | null>(null);
 
     useEffect(() => {
         // Get params from URL first, then localStorage
@@ -103,8 +108,37 @@ function PreparationContent() {
         setIsResearching(false);
     };
 
+    const startCalibration = async () => {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            setCameraStream(stream);
+            if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+            }
+            setIsCalibrating(true);
+        } catch (err) {
+            console.error("Camera access failed:", err);
+            setError("Camera access is required for calibration. Please adjust your browser settings.");
+        }
+    };
+
     const handlePrepComplete = () => {
-        // Navigate to interview
+        if (!isCalibrated) {
+            startCalibration();
+        } else {
+            router.push('/interview');
+        }
+    };
+
+    const onCalibrationComplete = () => {
+        setIsCalibrating(false);
+        setIsCalibrated(true);
+        // Clean up stream
+        if (cameraStream) {
+            cameraStream.getTracks().forEach(track => track.stop());
+            setCameraStream(null);
+        }
+        // Auto navigate or let user click proceed
         router.push('/interview');
     };
 
@@ -130,12 +164,35 @@ function PreparationContent() {
 
     return (
         <main className="min-h-screen bg-slate-900 text-slate-100">
-            <PrepCheck
-                onComplete={handlePrepComplete}
-                isResearching={isResearching}
-                researchProgress={progress}
-                researchStatus={statusMessage}
-            />
+            {isCalibrating ? (
+                <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col">
+                    {/* Camera Feed for Calibration (Needed for GazeTracker visual feedback) */}
+                    <div id="user-video-container" className="absolute bottom-4 right-4 w-64 h-48 bg-black rounded-lg overflow-hidden border-2 border-slate-700 z-10 shadow-2xl">
+                        <video
+                            ref={videoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="w-full h-full object-cover transform scale-x-[-1]"
+                        />
+                        <div className="absolute top-2 left-2 bg-black/60 px-2 py-0.5 rounded text-[10px] text-white/80 font-mono">
+                            CALIBRATION MODE
+                        </div>
+                    </div>
+
+                    <GazeTracker
+                        isActive={true}
+                        onCalibrationComplete={onCalibrationComplete}
+                    />
+                </div>
+            ) : (
+                <PrepCheck
+                    onComplete={handlePrepComplete}
+                    isResearching={isResearching}
+                    researchProgress={progress}
+                    researchStatus={statusMessage}
+                />
+            )}
         </main>
     );
 }
