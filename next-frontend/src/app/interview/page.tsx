@@ -9,9 +9,15 @@ import {
     Activity,
     LogOut,
     RotateCcw,
-    Pause
+    Pause,
+    AlertTriangle,
+    Eye,
+    EyeOff,
+    MessageSquare,
+    MessageSquareOff
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import GazeTracker from '@/components/GazeTracker';
 
 export default function InterviewPage() {
     const router = useRouter();
@@ -21,6 +27,7 @@ export default function InterviewPage() {
     const currentAssistantMessageRef = useRef<{ content: string, timestamp: string } | null>(null);
     const [currentAssistantMessage, setCurrentAssistantMessage] = useState<{ content: string, timestamp: string } | null>(null);
     const [isLoadingSession, setIsLoadingSession] = useState(true);
+    const [showTranscript, setShowTranscript] = useState(true);
 
     useEffect(() => {
         // Get session_id from localStorage or generate new one
@@ -52,7 +59,40 @@ export default function InterviewPage() {
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
 
+    // Proctoring State
+    // Initial stage is calibration because preparation is handled in /preparation
+    const [stage, setStage] = useState<'calibration' | 'interview' | 'terminated'>('calibration');
+    const [gazeViolations, setGazeViolations] = useState(0);
+
+    const handleGazeViolation = () => {
+        if (stage !== 'interview') return;
+
+        const newCount = gazeViolations + 1;
+        setGazeViolations(newCount);
+        console.warn(`Gaze violation detected! Count: ${newCount}`);
+
+        if (newCount > 5) {
+            handleMalpracticeTermination();
+        }
+    };
+
+    const handleMalpracticeTermination = async () => {
+        setStage('terminated');
+        setAiStatus('speaking'); // Or 'silent'
+
+        // Stop all sessions immediately
+        if (pcRef.current) pcRef.current.close();
+        if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+        if (dcRef.current) dcRef.current.close();
+        setIsConnected(false);
+        setIsMicActive(false);
+
+        // Optional: Save a "terminated" record to server if needed
+    };
+
     const startInterview = () => {
+        // Only start if we are in interview stage (after calibration)
+        if (stage !== 'interview') return;
         if (!dcRef.current || dcRef.current.readyState !== 'open') return;
         if (hasStarted) return;
 
@@ -114,6 +154,8 @@ export default function InterviewPage() {
         setIsPaused(false);
         setTranscriptMessages([]);
         setTranscriptionErrors([]);
+        setStage('calibration'); // Go back to calibration, not prep
+        setGazeViolations(0);
         currentAssistantMessageRef.current = null;
         setCurrentAssistantMessage(null);
         setAiStatus('listening');
@@ -413,11 +455,11 @@ export default function InterviewPage() {
     }, [sessionId, isLoadingSession]);
 
     useEffect(() => {
-        if (isConnected && !hasStarted) {
+        if (isConnected && !hasStarted && stage === 'interview') {
             const timer = setTimeout(() => startInterview(), 1500);
             return () => clearTimeout(timer);
         }
-    }, [isConnected, hasStarted]);
+    }, [isConnected, hasStarted, stage]);
 
     // Timer Logic
     useEffect(() => {
@@ -443,16 +485,30 @@ export default function InterviewPage() {
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
 
-    if (isLoadingSession) {
+    if (stage === 'terminated') {
         return (
             <main className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-sans">
-                <div className="max-w-md w-full bg-slate-800/90 backdrop-blur-xl rounded-3xl shadow-2xl shadow-black/50 border border-slate-700/50 p-12 text-center space-y-8">
-                    <div className="w-24 h-24 bg-blue-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <Activity className="w-12 h-12 text-blue-400 animate-pulse" />
+                <div className="max-w-md w-full bg-red-900/20 backdrop-blur-xl rounded-3xl shadow-2xl border border-red-500/50 p-12 text-center space-y-8">
+                    <div className="w-24 h-24 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
+                        <AlertTriangle className="w-12 h-12 text-red-500" />
                     </div>
                     <div>
-                        <h1 className="text-2xl font-bold text-slate-100 mb-2">Loading Session</h1>
-                        <p className="text-slate-400">Preparing your interview environment...</p>
+                        <h1 className="text-3xl font-bold text-red-100 mb-4">Interview Terminated</h1>
+                        <p className="text-red-200/80 mb-6">
+                            Multiple malpractice violations were detected correctly by our AI proctoring system.
+                        </p>
+                        <div className="p-4 bg-red-950/50 rounded-xl border border-red-500/30 mb-8">
+                            <p className="text-sm font-mono text-red-300">Reason: Excessive Gaze Aversion ({gazeViolations} violations)</p>
+                        </div>
+                        <button
+                            onClick={() => {
+                                const sessionId = localStorage.getItem('session_id');
+                                router.push(`/results/${sessionId}`);
+                            }}
+                            className="w-full py-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-colors"
+                        >
+                            View Results
+                        </button>
                     </div>
                 </div>
             </main>
@@ -501,6 +557,16 @@ export default function InterviewPage() {
 
     return (
         <main className="min-h-screen bg-slate-900 text-slate-100 font-sans flex flex-col">
+            {/* Gaze Tracker (Active during Calibration + Interview) */}
+            {(stage === 'calibration' || stage === 'interview') && !isLoadingSession && (
+                <GazeTracker
+                    isActive={stage === 'interview'}
+                    onCalibrationComplete={() => {
+                        setStage('interview');
+                    }}
+                    onGazeViolation={handleGazeViolation}
+                />
+            )}
             {/* Top Navigation */}
             <nav className="h-16 bg-slate-800/90 backdrop-blur-md border-b border-slate-700/50 sticky top-0 z-50 flex items-center justify-between px-8">
                 <div className="flex items-center gap-3">
@@ -527,6 +593,16 @@ export default function InterviewPage() {
                             {formatTime(timeLeft)}
                         </span>
                     </div>
+
+                    {/* Transcript Toggle */}
+                    <button
+                        onClick={() => setShowTranscript(!showTranscript)}
+                        className={`p-2 rounded-xl border border-slate-700/50 transition-all ${showTranscript ? 'bg-blue-600/20 text-blue-400 border-blue-500/30 ring-1 ring-blue-500/20' : 'bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
+                            }`}
+                        title={showTranscript ? "Hide Transcript" : "Show Transcript"}
+                    >
+                        {showTranscript ? <MessageSquare className="w-5 h-5" /> : <MessageSquareOff className="w-5 h-5" />}
+                    </button>
                 </div>
             </nav>
 
@@ -534,7 +610,7 @@ export default function InterviewPage() {
             <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-4xl mx-auto w-full">
                 {/* Connection Status Indicator */}
                 <div className="mb-8 flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-2xl border border-slate-700/50">
-                    <span className={`w-2 h-2 rounded-full ${aiStatus === 'speaking' ? 'bg-blue-500 animate-ping' : aiStatus === 'thinking' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
+                    <span className={`w-2 h-2 rounded-full transition-all duration-300 ${aiStatus === 'speaking' ? 'bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.8)]' : aiStatus === 'thinking' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
                     <span className="text-sm font-medium text-slate-300 uppercase tracking-wide">
                         {aiStatus === 'speaking' ? 'AI Speaking' : aiStatus === 'thinking' ? 'AI Thinking' : 'Listening'}
                     </span>
@@ -543,9 +619,13 @@ export default function InterviewPage() {
                 {/* Conversation Area */}
                 <div className="flex-1 w-full flex flex-col items-center justify-center space-y-8 mb-8">
                     {/* AI Avatar */}
-                    <div className="relative">
-                        <div className={`absolute -inset-4 bg-blue-500/10 rounded-full blur-2xl transition-opacity duration-700 ${aiStatus === 'speaking' ? 'opacity-100' : 'opacity-0'}`} />
-                        <div className={`w-48 h-48 rounded-full border-4 border-slate-700 shadow-2xl overflow-hidden relative transition-all duration-700 ${aiStatus === 'speaking' ? 'scale-105 ring-4 ring-blue-500/20' : 'scale-100'}`}>
+                    <div className="relative group">
+                        {/* Animated Glow Effect */}
+                        <div className={`absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-full blur transition-all duration-500 opacity-20 group-hover:opacity-40 pointer-events-none ${aiStatus === 'speaking' ? 'animate-pulse opacity-60' : ''}`} />
+
+                        <div className={`absolute -inset-4 bg-blue-500/10 rounded-full blur-2xl transition-all duration-300 ${aiStatus === 'speaking' ? 'opacity-100 scale-110' : 'opacity-0 scale-90'}`} />
+
+                        <div className={`w-48 h-48 rounded-full border-4 border-slate-700 shadow-2xl overflow-hidden relative transition-all duration-300 transform ${aiStatus === 'speaking' ? 'scale-105 ring-4 ring-blue-500/30 border-blue-500/50' : 'scale-100'}`}>
                             <img
                                 src="/images/avatar.png"
                                 alt="AI Interviewer"
@@ -559,54 +639,56 @@ export default function InterviewPage() {
                         </div>
                     </div>
 
-                    {/* Transcript Display - Always show */}
-                    <div className="w-full max-w-2xl bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 max-h-64 overflow-y-auto space-y-3">
-                        {transcriptMessages.length === 0 && !currentAssistantMessage ? (
-                            <div className="text-center text-slate-400 py-8">
-                                <p className="text-sm">Interview transcript will appear here...</p>
-                                <p className="text-xs mt-2 opacity-60">Start speaking to begin</p>
-                            </div>
-                        ) : (
-                            <>
-                                {transcriptMessages.slice(-5).map((msg, idx) => (
-                                    <div key={msg.id || idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                        <div className={`max-w-[80%] rounded-xl px-4 py-2 ${msg.role === 'user'
-                                            ? 'bg-blue-600 text-white'
-                                            : 'bg-slate-700 text-slate-100'
-                                            }`}>
-                                            <p className="text-sm">{msg.content}</p>
-                                            <p className="text-xs opacity-60 mt-1">
-                                                {new Date(msg.timestamp).toLocaleTimeString()}
-                                            </p>
+                    {/* Transcript Display */}
+                    {showTranscript && (
+                        <div className="w-full max-w-2xl bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 max-h-64 overflow-y-auto space-y-3">
+                            {transcriptMessages.length === 0 && !currentAssistantMessage ? (
+                                <div className="text-center text-slate-400 py-8">
+                                    <p className="text-sm">Interview transcript will appear here...</p>
+                                    <p className="text-xs mt-2 opacity-60">Start speaking to begin</p>
+                                </div>
+                            ) : (
+                                <>
+                                    {transcriptMessages.slice(-5).map((msg, idx) => (
+                                        <div key={msg.id || idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                            <div className={`max-w-[80%] rounded-xl px-4 py-2 ${msg.role === 'user'
+                                                ? 'bg-blue-600 text-white'
+                                                : 'bg-slate-700 text-slate-100'
+                                                }`}>
+                                                <p className="text-sm">{msg.content}</p>
+                                                <p className="text-xs opacity-60 mt-1">
+                                                    {new Date(msg.timestamp).toLocaleTimeString()}
+                                                </p>
+                                            </div>
                                         </div>
-                                    </div>
-                                ))}
+                                    ))}
 
-                                {/* Show current assistant message being typed in real-time */}
-                                {currentAssistantMessage && currentAssistantMessage.content && (
-                                    <div className="flex justify-start">
-                                        <div className="max-w-[80%] rounded-xl px-4 py-2 bg-slate-700 text-slate-100 border-2 border-blue-500/30 animate-pulse">
-                                            <p className="text-sm">{currentAssistantMessage.content}</p>
-                                            <p className="text-xs opacity-60 mt-1 flex items-center gap-1">
-                                                <span className="w-2 h-2 bg-blue-400 rounded-full animate-ping"></span>
-                                                AI is speaking...
-                                            </p>
+                                    {/* Show current assistant message being typed in real-time */}
+                                    {currentAssistantMessage && currentAssistantMessage.content && (
+                                        <div className="flex justify-start">
+                                            <div className="max-w-[80%] rounded-xl px-4 py-2 bg-slate-700 text-slate-100 border-2 border-blue-500/30 animate-pulse">
+                                                <p className="text-sm">{currentAssistantMessage.content}</p>
+                                                <p className="text-xs opacity-60 mt-1 flex items-center gap-1">
+                                                    <span className="w-2 h-2 bg-blue-400 rounded-full animate-ping"></span>
+                                                    AI is speaking...
+                                                </p>
+                                            </div>
                                         </div>
-                                    </div>
-                                )}
-                            </>
-                        )}
+                                    )}
+                                </>
+                            )}
 
-                        {/* Show transcription errors if any */}
-                        {transcriptionErrors.length > 0 && (
-                            <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
-                                <p className="text-red-400 text-xs font-medium">Transcription Issues:</p>
-                                {transcriptionErrors.slice(-3).map((error, idx) => (
-                                    <p key={idx} className="text-red-300 text-xs mt-1">{error}</p>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                            {/* Show transcription errors if any */}
+                            {transcriptionErrors.length > 0 && (
+                                <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
+                                    <p className="text-red-400 text-xs font-medium">Transcription Issues:</p>
+                                    {transcriptionErrors.slice(-3).map((error, idx) => (
+                                        <p key={idx} className="text-red-300 text-xs mt-1">{error}</p>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 {/* Control Buttons */}

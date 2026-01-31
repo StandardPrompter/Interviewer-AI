@@ -15,76 +15,25 @@ export default function LandingPage() {
     job_description: ''
   });
   const [resumeFile, setResumeFile] = useState<File | null>(null);
-  const [isPreparing, setIsPreparing] = useState(false);
-  const [progress, setProgress] = useState(0);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
-  const [sessionId, setSessionId] = useState<string>('');
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-
-  const pollStepFunctionStatus = async (executionArn: string): Promise<boolean> => {
-    const maxAttempts = 300; // 10 minutes max (300 * 2 seconds)
-    let attempts = 0;
-
-    while (attempts < maxAttempts) {
-      try {
-        const response = await fetch(`/api/check-step-function?executionArn=${encodeURIComponent(executionArn)}`);
-        if (!response.ok) {
-          throw new Error('Failed to check Step Functions status');
-        }
-
-        const data = await response.json();
-        const status = data.status;
-
-        if (status === 'SUCCEEDED') {
-          return true;
-        } else if (status === 'FAILED' || status === 'ABORTED' || status === 'TIMED_OUT') {
-          throw new Error(`Step Functions execution ${status.toLowerCase()}`);
-        }
-
-        // Update progress based on status
-        if (status === 'RUNNING') {
-          const progressValue = Math.min(90, 30 + (attempts * 0.2));
-          setProgress(progressValue);
-          if (progressValue < 60) {
-            setStatusMessage("Analyzing job description...");
-          } else if (progressValue < 85) {
-            setStatusMessage("Configuring interviewer persona...");
-          } else {
-            setStatusMessage("Finalizing specialized questions...");
-          }
-        }
-
-        // Wait 2 seconds before next poll
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        attempts++;
-      } catch (error) {
-        console.error("Error polling Step Functions:", error);
-        throw error;
-      }
-    }
-
-    throw new Error('Step Functions execution timed out');
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsPreparing(true);
-    setProgress(0);
+    setIsSubmitting(true);
     setStatusMessage("Initializing session...");
 
     // Generate session ID
     const newSessionId = uuidv4();
-    setSessionId(newSessionId);
 
     try {
       // Step 1: Save job description to DynamoDB
       setStatusMessage("Saving job description...");
-      setProgress(10);
 
       const saveResponse = await fetch('/api/save-job-description', {
         method: 'POST',
@@ -121,7 +70,6 @@ export default function LandingPage() {
         }
       }
 
-      setProgress(20);
       setStatusMessage("Triggering persona generation...");
 
       // Step 2: Trigger Step Functions
@@ -149,68 +97,24 @@ export default function LandingPage() {
         throw new Error('No execution ARN returned from Step Functions');
       }
 
-      setProgress(30);
-      setStatusMessage("Generating persona...");
-
-      // Step 3: Poll for Step Functions completion
-      await pollStepFunctionStatus(executionArn);
-
-      // Step 4: Navigate to interview page after success
-      setProgress(100);
-      setStatusMessage("Persona Generated!");
-
-      // Store session_id in localStorage for interview page
+      // Store session_id and executionArn in localStorage for backup
       localStorage.setItem('session_id', newSessionId);
+      localStorage.setItem('execution_arn', executionArn);
 
-      setTimeout(() => {
-        router.push('/interview');
-      }, 800);
+      // Navigate to preparation page
+      const params = new URLSearchParams({
+        session_id: newSessionId,
+        execution_arn: executionArn
+      });
+      router.push(`/preparation?${params.toString()}`);
+
     } catch (error: any) {
-      console.error("Error in persona generation flow:", error);
+      console.error("Error in setup flow:", error);
       setStatusMessage(`Error: ${error.message || 'Something went wrong'}`);
-      setIsPreparing(false);
-      setProgress(0);
+      setIsSubmitting(false);
+      alert(`Failed to start session: ${error.message || 'Unknown error'}`);
     }
   };
-
-  if (isPreparing) {
-    return (
-      <main className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-6 relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-full h-full overflow-hidden z-0">
-          <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-blue-500/20 rounded-full blur-[100px] animate-pulse" />
-          <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-indigo-500/20 rounded-full blur-[100px] animate-pulse delay-1000" />
-        </div>
-
-        <div className="z-10 max-w-md w-full text-center space-y-8 bg-slate-800/90 backdrop-blur-xl p-12 rounded-[2.5rem] shadow-2xl shadow-black/50 border border-slate-700/50">
-          <div className="relative w-24 h-24 mx-auto">
-            <svg className="w-full h-full" viewBox="0 0 100 100">
-              <circle className="text-slate-700 stroke-current" strokeWidth="6" cx="50" cy="50" r="40" fill="transparent" />
-              <circle
-                className="text-blue-500 stroke-current transition-all duration-500 ease-out"
-                strokeWidth="6"
-                strokeLinecap="round"
-                cx="50"
-                cy="50"
-                r="40"
-                fill="transparent"
-                strokeDasharray="251.2"
-                strokeDashoffset={251.2 - (251.2 * progress) / 100}
-                transform="rotate(-90 50 50)"
-              />
-            </svg>
-            <div className="absolute inset-0 flex items-center justify-center">
-              <Brain className="w-8 h-8 text-blue-500 animate-pulse" />
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <h2 className="text-2xl font-bold text-slate-100 tracking-tight">Setting up your interview</h2>
-            <p className="text-slate-400 text-sm font-medium h-5 italic">{statusMessage}</p>
-          </div>
-        </div>
-      </main>
-    );
-  }
 
   return (
     <main className="min-h-screen bg-slate-900 text-slate-100 overflow-x-hidden selection:bg-blue-500/30 selection:text-blue-100">
@@ -292,6 +196,7 @@ export default function LandingPage() {
                     onChange={handleInputChange}
                     className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder:text-slate-500"
                     placeholder="e.g. Nimble Work"
+                    disabled={isSubmitting}
                   />
                   <Building className="absolute right-4 top-4.5 w-4 h-4 text-slate-500" />
                 </div>
@@ -309,6 +214,7 @@ export default function LandingPage() {
                     onChange={handleInputChange}
                     className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder:text-slate-500"
                     placeholder="https://www.nimblework.com/"
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
@@ -324,6 +230,7 @@ export default function LandingPage() {
                     onChange={handleInputChange}
                     className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder:text-slate-500"
                     placeholder="e.g. Fahad Ali Shaikh"
+                    disabled={isSubmitting}
                   />
                   <User className="absolute right-4 top-4.5 w-4 h-4 text-slate-500" />
                 </div>
@@ -341,6 +248,7 @@ export default function LandingPage() {
                     onChange={handleInputChange}
                     className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder:text-slate-500"
                     placeholder="https://linkedin.com/in/..."
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
@@ -355,6 +263,7 @@ export default function LandingPage() {
                   onChange={handleInputChange}
                   className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder:text-slate-500 min-h-[160px] resize-none"
                   placeholder="Paste the role requirements here..."
+                  disabled={isSubmitting}
                 />
               </div>
 
@@ -369,16 +278,27 @@ export default function LandingPage() {
                     accept=".pdf"
                     onChange={(e) => setResumeFile(e.target.files ? e.target.files[0] : null)}
                     className="w-full bg-slate-900/50 border border-slate-700 text-slate-100 rounded-2xl px-5 py-4 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-500 file:text-white hover:file:bg-blue-600"
+                    disabled={isSubmitting}
                   />
                 </div>
               </div>
 
               <button
                 type="submit"
-                className="w-full bg-blue-500 text-white h-16 rounded-[1.25rem] font-bold flex items-center justify-center gap-3 hover:bg-blue-600 transition-all active:scale-[0.98] mt-4 shadow-xl shadow-blue-500/20 text-lg"
+                disabled={isSubmitting}
+                className="w-full bg-blue-500 text-white h-16 rounded-[1.25rem] font-bold flex items-center justify-center gap-3 hover:bg-blue-600 transition-all active:scale-[0.98] mt-4 shadow-xl shadow-blue-500/20 text-lg disabled:opacity-70 disabled:cursor-not-allowed"
               >
-                Launch Interview
-                <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
+                {isSubmitting ? (
+                  <>
+                    <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    {statusMessage || 'Processing...'}
+                  </>
+                ) : (
+                  <>
+                    Launch Interview
+                    <ArrowRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
+                  </>
+                )}
               </button>
             </form>
           </div>
