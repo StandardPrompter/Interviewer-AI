@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { v4 as uuidv4 } from 'uuid';
 import {
     Mic,
     MicOff,
@@ -35,7 +34,7 @@ export default function InterviewPage() {
             setIsLoadingSession(false);
         } else {
             // Generate new session ID if not found
-            const newSessionId = uuidv4();
+            const newSessionId = crypto.randomUUID();
             setSessionId(newSessionId);
             localStorage.setItem('session_id', newSessionId);
             setIsLoadingSession(false);
@@ -111,10 +110,19 @@ export default function InterviewPage() {
     }, [stage, handleMalpracticeTermination]);
 
 
+
     const startInterview = useCallback(() => {
+        console.log('🎯 startInterview called. stage:', stage, 'dcRef:', dcRef.current?.readyState);
         // Only start if we are in interview stage (after calibration)
-        if (stage !== 'interview') return;
-        if (!dcRef.current || dcRef.current.readyState !== 'open') return;
+        if (stage !== 'interview') {
+            console.log('❌ Not in interview stage, returning');
+            return;
+        }
+        if (!dcRef.current || dcRef.current.readyState !== 'open') {
+            console.log('❌ Data channel not open, returning. readyState:', dcRef.current?.readyState);
+            return;
+        }
+        console.log('✅ Starting interview...');
         setHasStarted((prevHasStarted: boolean) => {
             if (prevHasStarted) return true;
 
@@ -122,7 +130,7 @@ export default function InterviewPage() {
 
             // Add initial message to transcript
             setTranscriptMessages((prev) => [...prev, {
-                id: uuidv4(),
+                id: crypto.randomUUID(),
                 role: 'user',
                 content: initialMessage,
                 timestamp: new Date().toISOString()
@@ -174,23 +182,44 @@ export default function InterviewPage() {
             if (!tokenResponse.ok) throw new Error("Failed to get session token");
 
             const data = await tokenResponse.json();
+            console.log('📋 Full session response:', JSON.stringify(data, null, 2));
+            console.log('📋 Session model:', data.model);
+            console.log('📋 Session expires at:', data.expires_at);
+            console.log('📋 Client secret expires at:', data.client_secret?.expires_at);
             const EPHEMERAL_KEY = data.client_secret.value;
 
-            const pc = new RTCPeerConnection();
+            const pc = new RTCPeerConnection({
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' }
+                ]
+            });
             pcRef.current = pc;
 
-            const audioEl = document.createElement("audio");
-            audioEl.autoplay = true;
-            // Append to document to ensure it's not garbage collected and can play
-            audioEl.style.display = 'none';
-            document.body.appendChild(audioEl);
-            audioRef.current = audioEl;
+            // Monitor ICE and connection state changes
+            pc.onconnectionstatechange = () => {
+                console.log('🔌 PC connectionState:', pc.connectionState);
+            };
+            pc.oniceconnectionstatechange = () => {
+                console.log('🧊 PC iceConnectionState:', pc.iceConnectionState);
+                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+                    console.error('❌ ICE connection failed/disconnected');
+                }
+            };
+            pc.onicegatheringstatechange = () => {
+                console.log('🧊 PC iceGatheringState:', pc.iceGatheringState);
+            };
 
+            // Connect audio stream to existing audio element
             pc.ontrack = (e) => {
-                if (audioEl) {
-                    audioEl.srcObject = e.streams[0];
+                console.log('🎧 Received remote track:', e.track.kind);
+                if (audioRef.current) {
+                    audioRef.current.srcObject = e.streams[0];
                     // Explicitly try to play
-                    audioEl.play().catch(e => console.error("Auto-play failed:", e));
+                    audioRef.current.play().catch(e => console.error("❌ Auto-play failed:", e));
+                    console.log('✅ Audio stream attached to player');
+                } else {
+                    console.error('❌ Audio ref not found');
                 }
             };
 
@@ -268,7 +297,7 @@ export default function InterviewPage() {
                         const timestamp = currentAssistantMessageRef.current.timestamp;
 
                         setTranscriptMessages(prev => [...prev, {
-                            id: uuidv4(),
+                            id: crypto.randomUUID(),
                             role: 'assistant',
                             content: finalContent,
                             timestamp: timestamp
@@ -285,7 +314,7 @@ export default function InterviewPage() {
 
                         if (assistantContent && assistantContent.trim()) {
                             setTranscriptMessages(prev => [...prev, {
-                                id: uuidv4(),
+                                id: crypto.randomUUID(),
                                 role: 'assistant',
                                 content: assistantContent.trim(),
                                 timestamp: new Date().toISOString()
@@ -302,7 +331,7 @@ export default function InterviewPage() {
                     const transcription = event.transcript;
                     if (transcription && transcription.trim()) {
                         setTranscriptMessages(prev => [...prev, {
-                            id: uuidv4(),
+                            id: crypto.randomUUID(),
                             role: 'user',
                             content: transcription,
                             timestamp: new Date().toISOString()
@@ -326,25 +355,68 @@ export default function InterviewPage() {
             });
 
             dc.addEventListener("open", () => {
+                console.log('🔗 Data channel opened! readyState:', dc.readyState);
                 setIsConnected(true);
                 setIsConnecting(false);
 
-                // Configure session with input audio transcription enabled
-                const sessionUpdate = {
-                    type: "session.update",
-                    session: {
-                        input_audio_transcription: {
-                            model: "whisper-1"
-                        }
+                // Transcription is now configured at session creation in /api/session
+
+                // Start the interview immediately after connection
+                // Delay slightly to ensure session update is processed
+                setTimeout(() => {
+                    console.log('📢 Sending initial interview message... dc.readyState:', dc.readyState);
+                    if (dc.readyState !== 'open') {
+                        console.error('❌ Data channel not open, cannot send message');
+                        return;
                     }
-                };
-                dc.send(JSON.stringify(sessionUpdate));
+
+                    const initialMessage = `Hello! I'm ready to begin the interview. Please introduce yourself and start with the first question.`;
+
+                    const event = {
+                        type: "conversation.item.create",
+                        item: {
+                            type: "message",
+                            role: "user",
+                            content: [{
+                                type: "input_text",
+                                text: initialMessage
+                            }],
+                        },
+                    };
+
+                    try {
+                        dc.send(JSON.stringify(event));
+                        dc.send(JSON.stringify({ type: "response.create" }));
+                        setHasStarted(true);
+                        setAiStatus('speaking');
+                        console.log('✅ Interview started via dc.open handler');
+                    } catch (e) {
+                        console.error('❌ Error sending interview message:', e);
+                    }
+                }, 500);
+            });
+
+            dc.addEventListener("close", () => {
+                console.log('🔴 Data channel closed!');
+                setIsConnected(false);
+            });
+
+            dc.addEventListener("error", (e) => {
+                console.error('❌ Data channel error:', e);
             });
 
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
 
-            const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
+            console.log('📤 Sending SDP offer to OpenAI...');
+            console.log('📋 SDP Offer (first 500 chars):', offer.sdp?.substring(0, 500));
+            console.log('📋 Audio track info:', pc.getSenders().map(s => ({
+                track: s.track?.kind,
+                id: s.track?.id,
+                enabled: s.track?.enabled
+            })));
+
+            const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview`, {
                 method: "POST",
                 body: offer.sdp,
                 headers: {
@@ -353,8 +425,22 @@ export default function InterviewPage() {
                 },
             });
 
-            const answer: RTCSessionDescriptionInit = { type: "answer", sdp: await sdpResponse.text() };
+            console.log('📥 SDP response status:', sdpResponse.status, sdpResponse.statusText);
+            console.log('📥 SDP response headers:', Object.fromEntries(sdpResponse.headers.entries()));
+
+            if (!sdpResponse.ok) {
+                const errorText = await sdpResponse.text();
+                console.error('❌ SDP response error:', errorText);
+                setIsConnecting(false);
+                return;
+            }
+
+            const answerSdp = await sdpResponse.text();
+            console.log('✅ SDP answer received, length:', answerSdp.length);
+            console.log('📋 SDP Answer (first 500 chars):', answerSdp.substring(0, 500));
+            const answer: RTCSessionDescriptionInit = { type: "answer", sdp: answerSdp };
             await pc.setRemoteDescription(answer);
+            console.log('✅ Remote description set, pc.connectionState:', pc.connectionState);
 
         } catch (err: unknown) {
             setIsConnecting(false);
@@ -492,7 +578,8 @@ export default function InterviewPage() {
             if (pcRef.current) pcRef.current.close();
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
         };
-    }, [sessionId, isLoadingSession, initRealtime]);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [sessionId, isLoadingSession]);
 
     useEffect(() => {
         if (isConnected && !hasStarted && stage === 'interview') {

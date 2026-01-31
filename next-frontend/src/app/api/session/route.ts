@@ -3,11 +3,11 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, GetCommand } from '@aws-sdk/lib-dynamodb';
 
 const dynamoClient = new DynamoDBClient({
-  region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
+    region: process.env.AWS_REGION || 'us-east-1',
+    credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    },
 });
 
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
@@ -30,7 +30,7 @@ export async function POST(req: Request) {
         if (session_id) {
             try {
                 const tableName = process.env.DYNAMODB_PERSONA_TABLE || 'PersonaStorageTable';
-                
+
                 const response = await docClient.send(
                     new GetCommand({
                         TableName: tableName,
@@ -56,12 +56,15 @@ export async function POST(req: Request) {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: 'gpt-realtime-mini-2025-12-15',
+                model: 'gpt-4o-realtime-preview',
                 voice: 'ballad',
                 instructions: instructions,
+                input_audio_transcription: {
+                    model: 'gpt-4o-mini-transcribe'
+                }
             }),
         });
-        
+
         if (!response.ok) {
             const errorText = await response.text();
             console.error('OpenAI API error:', errorText);

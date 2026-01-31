@@ -53,11 +53,11 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             // Clear any previous data
             window.webgazer.clearData();
 
-            // Configure WebGazer to avoid MediaPipe dependencies
-            // We hide WebGazer's video because we render our own in InterviewPage for better control
+            // Configure WebGazer
+            // We hide WebGazer's video because we render our own in InterviewPage
             window.webgazer.showVideo(false);
-            window.webgazer.showFaceOverlay(false); // Disable face overlay to avoid MediaPipe
-            window.webgazer.showFaceFeedbackBox(false); // Disable feedback box
+            window.webgazer.showFaceOverlay(false);
+            window.webgazer.showFaceFeedbackBox(false);
 
             // If skipping calibration, hide points immediately
             if (skipCalibration) {
@@ -73,75 +73,35 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                 }
             }).begin();
 
-            // Relocate video feed to our custom container
-            const relocateVideo = () => {
+            // Force hide video element if it appears
+            const hideVideo = () => {
                 const videoElement = document.getElementById('webgazerVideoFeed');
-                const container = document.getElementById('user-video-container');
-
-                if (videoElement && container) {
-                    // Check if already in container
-                    if (videoElement.parentElement !== container) {
-                        container.appendChild(videoElement);
-                    }
-
-                    // Force styles to ensure it fits container and stays there
-                    // We use setProperty with 'important' to override WebGazer's internal style updates
-                    videoElement.style.setProperty('position', 'absolute', 'important');
-                    videoElement.style.setProperty('top', '0', 'important');
-                    videoElement.style.setProperty('left', '0', 'important');
-                    videoElement.style.setProperty('width', '100%', 'important');
-                    videoElement.style.setProperty('height', '100%', 'important');
-                    videoElement.style.setProperty('object-fit', 'cover', 'important');
-                    videoElement.style.setProperty('z-index', '10', 'important');
-                    videoElement.style.setProperty('border-radius', '0', 'important');
-                    videoElement.style.setProperty('margin', '0', 'important');
-                    videoElement.style.setProperty('display', 'block', 'important');
-
-                    // Also handle the face overlay canvas if it exists
-                    const overlay = document.getElementById('webgazerFaceOverlay');
-                    if (overlay && overlay.parentElement !== container) {
-                        container.appendChild(overlay);
-                        overlay.style.position = 'absolute';
-                        overlay.style.top = '0';
-                        overlay.style.left = '0';
-                        overlay.style.width = '100%';
-                        overlay.style.height = '100%';
-                        overlay.style.zIndex = '20';
-                    }
-
-                    // Handle feedback box
-                    const feedback = document.getElementById('webgazerFaceFeedbackBox');
-                    if (feedback && feedback.parentElement !== container) {
-                        container.appendChild(feedback);
-                        feedback.style.zIndex = '30';
-                    }
-
-                    return true;
+                if (videoElement) {
+                    videoElement.style.display = 'none';
+                    videoElement.style.visibility = 'hidden';
+                    videoElement.style.width = '0px';
+                    videoElement.style.height = '0px';
                 }
-                return false;
+                const faceOverlay = document.getElementById('webgazerFaceOverlay');
+                if (faceOverlay) {
+                    faceOverlay.style.display = 'none';
+                }
+                const feedbackBox = document.getElementById('webgazerFaceFeedbackBox');
+                if (feedbackBox) {
+                    feedbackBox.style.display = 'none';
+                }
             };
 
-            // Aggressive style enforcement loop
-            // WebGazer might try to reset styles or position, so we force it back
-            const intervalId = setInterval(relocateVideo, 100);
-
-            // Store interval ID for cleanup
-            // We'll attach it to the window object or a ref if needed, 
-            // but effectively clear it on cleanup
+            const intervalId = setInterval(hideVideo, 500);
             const cleanupInterval = () => clearInterval(intervalId);
-
-            // Stop checking after 10 seconds (usually enough time for stabilization)
             setTimeout(cleanupInterval, 10000);
-
-            // Also return cleanup for the useEffect
             return cleanupInterval;
-
 
         } catch (error) {
             console.error("Failed to initialize WebGazer:", error);
             isInitializedRef.current = false; // Reset on error
         }
-    }, [isCalibrating, isActive, checkGazeBounds]);
+    }, [isCalibrating, isActive, checkGazeBounds, skipCalibration]);
 
     const stopWebGazer = useCallback(() => {
         if (window.webgazer && isInitializedRef.current) {

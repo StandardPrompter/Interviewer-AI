@@ -2,7 +2,6 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { v4 as uuidv4 } from 'uuid';
 import { Activity, ArrowRight, Brain, Briefcase, Building, ChevronRight, Sparkles, User, CheckCircle, Shield } from 'lucide-react';
 
 export default function LandingPage() {
@@ -29,7 +28,7 @@ export default function LandingPage() {
     setStatusMessage("Initializing session...");
 
     // Generate session ID
-    const newSessionId = uuidv4();
+    const newSessionId = crypto.randomUUID();
 
     try {
       // Step 1: Save job description to DynamoDB
