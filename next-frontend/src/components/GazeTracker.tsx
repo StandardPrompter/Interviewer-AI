@@ -1,8 +1,8 @@
 "use client";
 
 import Script from 'next/script';
-import { useEffect, useState, useRef } from 'react';
-import { Eye, EyeOff, AlertTriangle, Crosshair, CheckCircle2 } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Eye, AlertTriangle, Crosshair } from 'lucide-react';
 
 interface GazeTrackerProps {
     onGazeViolation?: () => void;
@@ -16,32 +16,42 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
     const [calibrationPoints, setCalibrationPoints] = useState<number>(0);
     const [gazeStatus, setGazeStatus] = useState<'safe' | 'warning' | 'calibrating'>('calibrating');
     const warningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const [debugGaze, setDebugGaze] = useState<{ x: number, y: number } | null>(null);
 
-    // Initial setup when script is loaded
-    useEffect(() => {
-        if (scriptLoaded && window.webgazer) {
-            setupWebGazer();
+    const checkGazeBounds = useCallback((x: number, y: number) => {
+        const { innerWidth, innerHeight } = window;
+        const margin = 100; // Allow some margin outside the viewport
+
+        const isOutside = x < -margin || x > innerWidth + margin || y < -margin || y > innerHeight + margin;
+
+        if (isOutside) {
+            setGazeStatus('warning');
+            if (!warningTimeoutRef.current) {
+                warningTimeoutRef.current = setTimeout(() => {
+                    if (onGazeViolation) onGazeViolation();
+                }, 2000); // 2 seconds of looking away triggers violation
+            }
+        } else {
+            setGazeStatus('safe');
+            if (warningTimeoutRef.current) {
+                clearTimeout(warningTimeoutRef.current);
+                warningTimeoutRef.current = null;
+            }
         }
-        return () => {
-            // Cleanup handled in detailed cleanup function
-            stopWebGazer();
-        };
-    }, [scriptLoaded]);
+    }, [onGazeViolation]);
 
-    const setupWebGazer = async () => {
+    const setupWebGazer = useCallback(async () => {
         try {
             // Initialize but don't start predicting continuously yet until after calibration? 
             // Actually WebGazer needs to run to calibrate.
+
+            if (!window.webgazer) return;
 
             // Clear any previous data
             window.webgazer.clearData();
 
             // Start the gaze tracker
-            await window.webgazer.setGazeListener((data, clock) => {
+            await window.webgazer.setGazeListener((data) => {
                 if (data) {
-                    setDebugGaze({ x: data.x, y: data.y });
-
                     if (!isCalibrating && isActive) {
                         checkGazeBounds(data.x, data.y);
                     }
@@ -71,9 +81,9 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
         } catch (error) {
             console.error("Failed to initialize WebGazer:", error);
         }
-    };
+    }, [isCalibrating, isActive, checkGazeBounds]);
 
-    const stopWebGazer = () => {
+    const stopWebGazer = useCallback(() => {
         if (window.webgazer) {
             window.webgazer.end();
             // Also need to manually remove the video element if WebGazer doesn't do it cleanly
@@ -84,29 +94,18 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             const feedbackBox = document.getElementById('webgazerFaceFeedbackBox');
             if (feedbackBox) feedbackBox.remove();
         }
-    };
+    }, []);
 
-    const checkGazeBounds = (x: number, y: number) => {
-        const { innerWidth, innerHeight } = window;
-        const margin = 100; // Allow some margin outside the viewport
-
-        const isOutside = x < -margin || x > innerWidth + margin || y < -margin || y > innerHeight + margin;
-
-        if (isOutside) {
-            setGazeStatus('warning');
-            if (!warningTimeoutRef.current) {
-                warningTimeoutRef.current = setTimeout(() => {
-                    if (onGazeViolation) onGazeViolation();
-                }, 2000); // 2 seconds of looking away triggers violation
-            }
-        } else {
-            setGazeStatus('safe');
-            if (warningTimeoutRef.current) {
-                clearTimeout(warningTimeoutRef.current);
-                warningTimeoutRef.current = null;
-            }
+    // Initial setup when script is loaded
+    useEffect(() => {
+        if (scriptLoaded && window.webgazer) {
+            setupWebGazer();
         }
-    };
+        return () => {
+            // Cleanup handled in detailed cleanup function
+            stopWebGazer();
+        };
+    }, [scriptLoaded, setupWebGazer, stopWebGazer]);
 
     const handleCalibrationClick = (pointId: string) => {
         // In a real implementation, we'd track specific points. 
@@ -122,6 +121,7 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             setGazeStatus('safe');
             // Turn off predictions markers after calibration
             window.webgazer.showPredictionPoints(false);
+            if (onCalibrationComplete) onCalibrationComplete();
         }
     };
 

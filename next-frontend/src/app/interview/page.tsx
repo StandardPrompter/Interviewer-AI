@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import {
     Mic,
@@ -11,8 +11,6 @@ import {
     RotateCcw,
     Pause,
     AlertTriangle,
-    Eye,
-    EyeOff,
     MessageSquare,
     MessageSquareOff
 } from 'lucide-react';
@@ -64,19 +62,7 @@ export default function InterviewPage() {
     const [stage, setStage] = useState<'calibration' | 'interview' | 'terminated'>('calibration');
     const [gazeViolations, setGazeViolations] = useState(0);
 
-    const handleGazeViolation = () => {
-        if (stage !== 'interview') return;
-
-        const newCount = gazeViolations + 1;
-        setGazeViolations(newCount);
-        console.warn(`Gaze violation detected! Count: ${newCount}`);
-
-        if (newCount > 5) {
-            handleMalpracticeTermination();
-        }
-    };
-
-    const handleMalpracticeTermination = async () => {
+    const handleMalpracticeTermination = useCallback(async () => {
         setStage('terminated');
         setAiStatus('speaking'); // Or 'silent'
 
@@ -88,83 +74,265 @@ export default function InterviewPage() {
         setIsMicActive(false);
 
         // Optional: Save a "terminated" record to server if needed
-    };
+    }, []);
 
-    const startInterview = () => {
+    const handleGazeViolation = useCallback(() => {
+        if (stage !== 'interview') return;
+
+        setGazeViolations(prev => {
+            const newCount = prev + 1;
+            console.warn(`Gaze violation detected! Count: ${newCount}`);
+            if (newCount > 5) {
+                handleMalpracticeTermination();
+            }
+            return newCount;
+        });
+    }, [stage, handleMalpracticeTermination]);
+
+
+    const startInterview = useCallback(() => {
         // Only start if we are in interview stage (after calibration)
         if (stage !== 'interview') return;
         if (!dcRef.current || dcRef.current.readyState !== 'open') return;
-        if (hasStarted) return;
+        setHasStarted(prevHasStarted => {
+            if (prevHasStarted) return true;
 
-        const initialMessage = `Hello! I'm ready to begin the interview. Please introduce yourself and start with the first question.`;
+            const initialMessage = `Hello! I'm ready to begin the interview. Please introduce yourself and start with the first question.`;
 
-        // Add initial message to transcript
-        setTranscriptMessages(prev => [...prev, {
-            id: uuidv4(),
-            role: 'user',
-            content: initialMessage,
-            timestamp: new Date().toISOString()
-        }]);
+            // Add initial message to transcript
+            setTranscriptMessages(prev => [...prev, {
+                id: uuidv4(),
+                role: 'user',
+                content: initialMessage,
+                timestamp: new Date().toISOString()
+            }]);
 
-        const event = {
-            type: "conversation.item.create",
-            item: {
-                type: "message",
-                role: "user",
-                content: [{
-                    type: "input_text",
-                    text: initialMessage
-                }],
-            },
-        };
-        dcRef.current.send(JSON.stringify(event));
-        dcRef.current.send(JSON.stringify({
-            type: "response.create"
-        }));
-        setHasStarted(true);
-        setAiStatus('speaking');
-    };
+            const event = {
+                type: "conversation.item.create",
+                item: {
+                    type: "message",
+                    role: "user",
+                    content: [{
+                        type: "input_text",
+                        text: initialMessage
+                    }],
+                },
+            };
+            dcRef.current?.send(JSON.stringify(event));
+            dcRef.current?.send(JSON.stringify({
+                type: "response.create"
+            }));
 
-    const togglePause = () => {
-        setIsPaused(!isPaused);
-        if (streamRef.current) {
-            streamRef.current.getAudioTracks().forEach(track => track.enabled = isPaused);
+            setAiStatus('speaking');
+            return true;
+        });
+    }, [stage]);
+
+    const togglePause = useCallback(() => {
+        setIsPaused(prev => {
+            const newState = !prev;
+            if (streamRef.current) {
+                streamRef.current.getAudioTracks().forEach(track => track.enabled = newState);
+            }
+            return newState;
+        });
+    }, []);
+
+    const initRealtime = useCallback(async () => {
+        if (isConnecting || isConnected) return;
+
+        try {
+            setIsConnecting(true);
+
+            const tokenResponse = await fetch('/api/session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId })
+            });
+
+            if (!tokenResponse.ok) throw new Error("Failed to get session token");
+
+            const data = await tokenResponse.json();
+            const EPHEMERAL_KEY = data.client_secret.value;
+
+            const pc = new RTCPeerConnection();
+            pcRef.current = pc;
+
+            const audioEl = document.createElement("audio");
+            audioEl.autoplay = true;
+            audioRef.current = audioEl;
+
+            pc.ontrack = (e) => {
+                if (audioEl) audioEl.srcObject = e.streams[0];
+            };
+
+            const ms = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: false
+            });
+            streamRef.current = ms;
+
+            const audioTrack = ms.getAudioTracks()[0];
+            if (audioTrack) {
+                setIsMicActive(true);
+                pc.addTrack(audioTrack, ms);
+            }
+
+            const dc = pc.createDataChannel("oai-events");
+            dcRef.current = dc;
+
+            dc.addEventListener("message", async (e) => {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const event = JSON.parse(e.data) as any;
+                console.log('📨 Received event:', event.type, event);
+
+                // Handle assistant response start
+                if (event.type === 'response.created') {
+                    console.log('🤖 AI response started');
+                    const newMessage = {
+                        content: '',
+                        timestamp: new Date().toISOString()
+                    };
+                    currentAssistantMessageRef.current = newMessage;
+                    setCurrentAssistantMessage(newMessage);
+                }
+
+                // Handle assistant audio transcript deltas (real-time transcription of AI speech)
+                // Support both old and new event names for compatibility
+                if (event.type === 'response.audio_transcript.delta' || event.type === 'response.output_audio_transcript.delta') {
+                    const textDelta = event.delta;
+                    console.log('📝 AI audio transcript delta:', textDelta);
+                    if (textDelta && currentAssistantMessageRef.current) {
+                        currentAssistantMessageRef.current.content += textDelta;
+                        // Update UI state for real-time display
+                        setCurrentAssistantMessage(prev => prev ? {
+                            ...prev,
+                            content: prev.content + textDelta
+                        } : null);
+                    }
+                }
+
+                // Also support response.text.delta for text-only responses (fallback)
+                if (event.type === 'response.text.delta') {
+                    const textDelta = event.delta;
+                    console.log('📝 AI text delta:', textDelta);
+                    if (textDelta && currentAssistantMessageRef.current) {
+                        currentAssistantMessageRef.current.content += textDelta;
+                        // Update UI state for real-time display
+                        setCurrentAssistantMessage(prev => prev ? {
+                            ...prev,
+                            content: prev.content + textDelta
+                        } : null);
+                    }
+                }
+
+                // Handle assistant response completion
+                if (event.type === 'response.done') {
+                    console.log('✅ AI response completed');
+
+                    // First try to use the accumulated text from deltas
+                    if (currentAssistantMessageRef.current && currentAssistantMessageRef.current.content.trim()) {
+                        const finalContent = currentAssistantMessageRef.current.content.trim();
+                        const timestamp = currentAssistantMessageRef.current.timestamp;
+
+                        setTranscriptMessages(prev => [...prev, {
+                            id: uuidv4(),
+                            role: 'assistant',
+                            content: finalContent,
+                            timestamp: timestamp
+                        }]);
+                        console.log('✓ Assistant response saved (from deltas):', finalContent.substring(0, 100) + '...');
+                    }
+                    // Fallback: try to extract from response.output if deltas didn't work
+                    else if (event.response?.output) {
+                        const assistantContent = event.response.output
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            .filter((o: any) => o.type === 'text')
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            .map((o: any) => o.text || o.value)
+                            .join('');
+
+                        if (assistantContent && assistantContent.trim()) {
+                            setTranscriptMessages(prev => [...prev, {
+                                id: uuidv4(),
+                                role: 'assistant',
+                                content: assistantContent.trim(),
+                                timestamp: new Date().toISOString()
+                            }]);
+                            console.log('✓ Assistant response saved (from output):', assistantContent.substring(0, 100) + '...');
+                        }
+                    }
+
+                    currentAssistantMessageRef.current = null;
+                    setCurrentAssistantMessage(null);
+                }
+
+                // Handle user input transcriptions
+                if (event.type === 'conversation.item.input_audio_transcription.completed') {
+                    const transcription = event.transcript;
+                    if (transcription && transcription.trim()) {
+                        setTranscriptMessages(prev => [...prev, {
+                            id: uuidv4(),
+                            role: 'user',
+                            content: transcription,
+                            timestamp: new Date().toISOString()
+                        }]);
+                        console.log('✓ User transcription:', transcription);
+                    }
+                }
+
+                // Handle failed transcriptions
+                if (event.type === 'conversation.item.input_audio_transcription.failed') {
+                    console.warn('⚠ Transcription failed:', event.error);
+                    setTranscriptionErrors(prev => [...prev, event.error?.message || 'Unknown transcription error']);
+                }
+
+                // Manage AI Status based on events
+                if (event.type === 'response.audio.delta') setAiStatus('speaking');
+                if (event.type === 'input_audio_buffer.speech_started') setAiStatus('listening');
+                if (event.type === 'response.done') setAiStatus('listening');
+                if (event.type === 'input_audio_buffer.speech_stopped') setAiStatus('thinking');
+                if (event.type === 'response.created') setAiStatus('thinking');
+            });
+
+            dc.addEventListener("open", () => {
+                setIsConnected(true);
+                setIsConnecting(false);
+
+                // Configure session with input audio transcription enabled
+                const sessionUpdate = {
+                    type: "session.update",
+                    session: {
+                        input_audio_transcription: {
+                            model: "whisper-1"
+                        }
+                    }
+                };
+                dc.send(JSON.stringify(sessionUpdate));
+            });
+
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+
+            const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
+                method: "POST",
+                body: offer.sdp,
+                headers: {
+                    Authorization: `Bearer ${EPHEMERAL_KEY}`,
+                    "Content-Type": "application/sdp",
+                },
+            });
+
+            const answer: RTCSessionDescriptionInit = { type: "answer", sdp: await sdpResponse.text() };
+            await pc.setRemoteDescription(answer);
+
+        } catch (err: unknown) {
+            setIsConnecting(false);
+            console.error('Connection error:', err);
         }
-    };
+    }, [isConnected, isConnecting, sessionId]);
 
-    const restartInterview = async () => {
-        // Close current connection
-        if (pcRef.current) {
-            pcRef.current.close();
-            pcRef.current = null;
-        }
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(track => track.stop());
-            streamRef.current = null;
-        }
-        if (dcRef.current) {
-            dcRef.current.close();
-            dcRef.current = null;
-        }
-
-        // Reset state
-        setIsConnected(false);
-        setIsConnecting(false);
-        setHasStarted(false);
-        setIsPaused(false);
-        setTranscriptMessages([]);
-        setTranscriptionErrors([]);
-        setStage('calibration'); // Go back to calibration, not prep
-        setGazeViolations(0);
-        currentAssistantMessageRef.current = null;
-        setCurrentAssistantMessage(null);
-        setAiStatus('listening');
-
-        // Re-initialize connection
-        await initRealtime();
-    };
-
-    const stopSession = async () => {
+    const stopSession = useCallback(async () => {
         // Close media streams first
         if (pcRef.current) pcRef.current.close();
         if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
@@ -247,204 +415,45 @@ export default function InterviewPage() {
                 // Redirect to results page
                 router.push('/results');
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error("Error in completion process:", error);
             setIsSavingTranscript(false);
             // Redirect to results page even if there was an error
             router.push('/results');
         }
-    };
+    }, [router, sessionId, transcriptMessages]);
 
-    const initRealtime = async () => {
-        if (isConnecting || isConnected) return;
-
-        try {
-            setIsConnecting(true);
-
-            const tokenResponse = await fetch('/api/session', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId })
-            });
-
-            if (!tokenResponse.ok) throw new Error("Failed to get session token");
-
-            const data = await tokenResponse.json();
-            const EPHEMERAL_KEY = data.client_secret.value;
-
-            const pc = new RTCPeerConnection();
-            pcRef.current = pc;
-
-            const audioEl = document.createElement("audio");
-            audioEl.autoplay = true;
-            audioRef.current = audioEl;
-
-            pc.ontrack = (e) => {
-                if (audioEl) audioEl.srcObject = e.streams[0];
-            };
-
-            const ms = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: false
-            });
-            streamRef.current = ms;
-
-            const audioTrack = ms.getAudioTracks()[0];
-            if (audioTrack) {
-                setIsMicActive(true);
-                pc.addTrack(audioTrack, ms);
-            }
-
-            const dc = pc.createDataChannel("oai-events");
-            dcRef.current = dc;
-
-            dc.addEventListener("message", async (e) => {
-                const event = JSON.parse(e.data);
-                console.log('📨 Received event:', event.type, event);
-
-                // Handle assistant response start
-                if (event.type === 'response.created') {
-                    console.log('🤖 AI response started');
-                    const newMessage = {
-                        content: '',
-                        timestamp: new Date().toISOString()
-                    };
-                    currentAssistantMessageRef.current = newMessage;
-                    setCurrentAssistantMessage(newMessage);
-                }
-
-                // Handle assistant audio transcript deltas (real-time transcription of AI speech)
-                // Support both old and new event names for compatibility
-                if (event.type === 'response.audio_transcript.delta' || event.type === 'response.output_audio_transcript.delta') {
-                    const textDelta = event.delta;
-                    console.log('📝 AI audio transcript delta:', textDelta);
-                    if (textDelta && currentAssistantMessageRef.current) {
-                        currentAssistantMessageRef.current.content += textDelta;
-                        // Update UI state for real-time display
-                        setCurrentAssistantMessage(prev => prev ? {
-                            ...prev,
-                            content: prev.content + textDelta
-                        } : null);
-                    }
-                }
-
-                // Also support response.text.delta for text-only responses (fallback)
-                if (event.type === 'response.text.delta') {
-                    const textDelta = event.delta;
-                    console.log('📝 AI text delta:', textDelta);
-                    if (textDelta && currentAssistantMessageRef.current) {
-                        currentAssistantMessageRef.current.content += textDelta;
-                        // Update UI state for real-time display
-                        setCurrentAssistantMessage(prev => prev ? {
-                            ...prev,
-                            content: prev.content + textDelta
-                        } : null);
-                    }
-                }
-
-                // Handle assistant response completion
-                if (event.type === 'response.done') {
-                    console.log('✅ AI response completed');
-
-                    // First try to use the accumulated text from deltas
-                    if (currentAssistantMessageRef.current && currentAssistantMessageRef.current.content.trim()) {
-                        const finalContent = currentAssistantMessageRef.current.content.trim();
-                        const timestamp = currentAssistantMessageRef.current.timestamp;
-
-                        setTranscriptMessages(prev => [...prev, {
-                            id: uuidv4(),
-                            role: 'assistant',
-                            content: finalContent,
-                            timestamp: timestamp
-                        }]);
-                        console.log('✓ Assistant response saved (from deltas):', finalContent.substring(0, 100) + '...');
-                    }
-                    // Fallback: try to extract from response.output if deltas didn't work
-                    else if (event.response?.output) {
-                        const assistantContent = event.response.output
-                            .filter((o: any) => o.type === 'text')
-                            .map((o: any) => o.text || o.value)
-                            .join('');
-
-                        if (assistantContent && assistantContent.trim()) {
-                            setTranscriptMessages(prev => [...prev, {
-                                id: uuidv4(),
-                                role: 'assistant',
-                                content: assistantContent.trim(),
-                                timestamp: new Date().toISOString()
-                            }]);
-                            console.log('✓ Assistant response saved (from output):', assistantContent.substring(0, 100) + '...');
-                        }
-                    }
-
-                    currentAssistantMessageRef.current = null;
-                    setCurrentAssistantMessage(null);
-                }
-
-                // Handle user input transcriptions
-                if (event.type === 'conversation.item.input_audio_transcription.completed') {
-                    const transcription = event.transcript;
-                    if (transcription && transcription.trim()) {
-                        setTranscriptMessages(prev => [...prev, {
-                            id: uuidv4(),
-                            role: 'user',
-                            content: transcription,
-                            timestamp: new Date().toISOString()
-                        }]);
-                        console.log('✓ User transcription:', transcription);
-                    }
-                }
-
-                // Handle failed transcriptions
-                if (event.type === 'conversation.item.input_audio_transcription.failed') {
-                    console.warn('⚠ Transcription failed:', event.error);
-                    setTranscriptionErrors(prev => [...prev, event.error?.message || 'Unknown transcription error']);
-                }
-
-                // Manage AI Status based on events
-                if (event.type === 'response.audio.delta') setAiStatus('speaking');
-                if (event.type === 'input_audio_buffer.speech_started') setAiStatus('listening');
-                if (event.type === 'response.done') setAiStatus('listening');
-                if (event.type === 'input_audio_buffer.speech_stopped') setAiStatus('thinking');
-                if (event.type === 'response.created') setAiStatus('thinking');
-            });
-
-            dc.addEventListener("open", () => {
-                setIsConnected(true);
-                setIsConnecting(false);
-
-                // Configure session with input audio transcription enabled
-                const sessionUpdate = {
-                    type: "session.update",
-                    session: {
-                        input_audio_transcription: {
-                            model: "whisper-1"
-                        }
-                    }
-                };
-                dc.send(JSON.stringify(sessionUpdate));
-            });
-
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-
-            const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`, {
-                method: "POST",
-                body: offer.sdp,
-                headers: {
-                    Authorization: `Bearer ${EPHEMERAL_KEY}`,
-                    "Content-Type": "application/sdp",
-                },
-            });
-
-            const answer: RTCSessionDescriptionInit = { type: "answer", sdp: await sdpResponse.text() };
-            await pc.setRemoteDescription(answer);
-
-        } catch (err: any) {
-            setIsConnecting(false);
-            console.error('Connection error:', err);
+    const restartInterview = useCallback(async () => {
+        // Close current connection
+        if (pcRef.current) {
+            pcRef.current.close();
+            pcRef.current = null;
         }
-    };
+        if (streamRef.current) {
+            streamRef.current.getTracks().forEach(track => track.stop());
+            streamRef.current = null;
+        }
+        if (dcRef.current) {
+            dcRef.current.close();
+            dcRef.current = null;
+        }
+
+        // Reset state
+        setIsConnected(false);
+        setIsConnecting(false);
+        setHasStarted(false);
+        setIsPaused(false);
+        setTranscriptMessages([]);
+        setTranscriptionErrors([]);
+        setStage('calibration'); // Go back to calibration, not prep
+        setGazeViolations(0);
+        currentAssistantMessageRef.current = null;
+        setCurrentAssistantMessage(null);
+        setAiStatus('listening');
+
+        // Re-initialize connection
+        await initRealtime();
+    }, [initRealtime]);
 
     useEffect(() => {
         if (sessionId && !isLoadingSession) initRealtime();
@@ -452,14 +461,14 @@ export default function InterviewPage() {
             if (pcRef.current) pcRef.current.close();
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
         };
-    }, [sessionId, isLoadingSession]);
+    }, [sessionId, isLoadingSession, initRealtime]);
 
     useEffect(() => {
         if (isConnected && !hasStarted && stage === 'interview') {
             const timer = setTimeout(() => startInterview(), 1500);
             return () => clearTimeout(timer);
         }
-    }, [isConnected, hasStarted, stage]);
+    }, [isConnected, hasStarted, stage, startInterview]);
 
     // Timer Logic
     useEffect(() => {
@@ -477,7 +486,7 @@ export default function InterviewPage() {
             }, 1000);
         }
         return () => clearInterval(interval);
-    }, [isConnected, isPaused, timeLeft]);
+    }, [isConnected, isPaused, timeLeft, stopSession]);
 
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
@@ -626,6 +635,7 @@ export default function InterviewPage() {
                         <div className={`absolute -inset-4 bg-blue-500/10 rounded-full blur-2xl transition-all duration-300 ${aiStatus === 'speaking' ? 'opacity-100 scale-110' : 'opacity-0 scale-90'}`} />
 
                         <div className={`w-48 h-48 rounded-full border-4 border-slate-700 shadow-2xl overflow-hidden relative transition-all duration-300 transform ${aiStatus === 'speaking' ? 'scale-105 ring-4 ring-blue-500/30 border-blue-500/50' : 'scale-100'}`}>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
                                 src="/images/avatar.png"
                                 alt="AI Interviewer"

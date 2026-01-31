@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from 'react';
-import { Camera, Mic, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
+import { useEffect, useState, useRef, useCallback } from 'react';
+import { Mic, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
 
 interface PrepCheckProps {
     onComplete: () => void;
@@ -25,14 +25,7 @@ export default function PrepCheck({ onComplete, isResearching, researchProgress 
     const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
     const animationFrameRef = useRef<number | null>(null);
 
-    useEffect(() => {
-        checkMedia();
-        return () => {
-            stopMedia();
-        };
-    }, []);
-
-    const stopMedia = () => {
+    const stopMedia = useCallback(() => {
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
             streamRef.current = null;
@@ -45,11 +38,12 @@ export default function PrepCheck({ onComplete, isResearching, researchProgress 
             cancelAnimationFrame(animationFrameRef.current);
             animationFrameRef.current = null;
         }
-    };
+    }, []);
 
-    const checkMedia = async () => {
+    const checkMedia = useCallback(async () => {
         try {
-            setIsChecking(true);
+            // setIsChecking(true); // Already true by default
+            // Use window.navigator.mediaDevices if navigator.mediaDevices isn't directly available in some older contexts, though widely supported now.
             const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
             streamRef.current = stream;
 
@@ -87,7 +81,14 @@ export default function PrepCheck({ onComplete, isResearching, researchProgress 
             setError("Could not access camera or microphone. Please allow permissions to continue.");
             setIsChecking(false);
         }
-    };
+    }, []);
+
+    useEffect(() => {
+        checkMedia();
+        return () => {
+            stopMedia();
+        };
+    }, [checkMedia, stopMedia]);
 
     const allChecksPassed = hasCamera && hasMic;
 
