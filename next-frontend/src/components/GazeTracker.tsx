@@ -17,6 +17,7 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
     const [gazeStatus, setGazeStatus] = useState<'safe' | 'warning' | 'calibrating'>('calibrating');
     const warningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
     const isInitializedRef = useRef<boolean>(false);
+    const videoObserverRef = useRef<MutationObserver | null>(null);
 
     const checkGazeBounds = useCallback((x: number, y: number) => {
         const { innerWidth, innerHeight } = window;
@@ -104,8 +105,16 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                         container.appendChild(feedback);
                         feedback.style.zIndex = '30';
                     }
+
+                    // Disconnect observer once successful
+                    if (videoObserverRef.current) {
+                        videoObserverRef.current.disconnect();
+                        videoObserverRef.current = null;
+                    }
+
+                    return true;
                 } else if (videoElement) {
-                    // Fallback if container not found yet (retry or keep fixed)
+                    // Fallback if container not found yet
                     videoElement.style.position = 'fixed';
                     videoElement.style.bottom = '20px';
                     videoElement.style.right = '20px';
@@ -115,12 +124,37 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                     videoElement.style.borderRadius = '12px';
                     videoElement.style.border = '2px solid rgba(59, 130, 246, 0.5)';
                 }
+                return false;
             };
 
-            // Try immediately and also after a short delay to ensure WebGazer created elements
-            relocateVideo();
-            setTimeout(relocateVideo, 500);
-            setTimeout(relocateVideo, 2000);
+            // Try relocation immediately
+            if (!relocateVideo()) {
+                // Set up MutationObserver to watch for video element creation
+                videoObserverRef.current = new MutationObserver(() => {
+                    if (relocateVideo()) {
+                        // Successfully relocated, stop observing
+                        if (videoObserverRef.current) {
+                            videoObserverRef.current.disconnect();
+                            videoObserverRef.current = null;
+                        }
+                    }
+                });
+
+                // Observe the entire document for new elements
+                videoObserverRef.current.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                });
+
+                // Fallback timeout to stop observing after 5 seconds
+                setTimeout(() => {
+                    relocateVideo(); // One last try
+                    if (videoObserverRef.current) {
+                        videoObserverRef.current.disconnect();
+                        videoObserverRef.current = null;
+                    }
+                }, 5000);
+            }
 
         } catch (error) {
             console.error("Failed to initialize WebGazer:", error);
@@ -136,6 +170,12 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             } catch (error) {
                 // WebGazer's end() can throw if elements are already removed
                 console.warn('WebGazer cleanup error (safe to ignore):', error);
+            }
+
+            // Disconnect observer if still active
+            if (videoObserverRef.current) {
+                videoObserverRef.current.disconnect();
+                videoObserverRef.current = null;
             }
 
             // Manually clean up DOM elements
