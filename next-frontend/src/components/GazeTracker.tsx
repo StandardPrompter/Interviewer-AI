@@ -16,6 +16,7 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
     const [calibrationPoints, setCalibrationPoints] = useState<number>(0);
     const [gazeStatus, setGazeStatus] = useState<'safe' | 'warning' | 'calibrating'>('calibrating');
     const warningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+    const isInitializedRef = useRef<boolean>(false);
 
     const checkGazeBounds = useCallback((x: number, y: number) => {
         const { innerWidth, innerHeight } = window;
@@ -41,11 +42,19 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
 
     const setupWebGazer = useCallback(async () => {
         try {
-            // Check if webgazer is available
-            if (!window.webgazer) return;
+            // Check if webgazer is available and not already initialized
+            if (!window.webgazer || isInitializedRef.current) return;
+
+            // Mark as initialized
+            isInitializedRef.current = true;
 
             // Clear any previous data
             window.webgazer.clearData();
+
+            // Configure WebGazer to avoid MediaPipe dependencies
+            window.webgazer.showVideo(true);
+            window.webgazer.showFaceOverlay(false); // Disable face overlay to avoid MediaPipe
+            window.webgazer.showFaceFeedbackBox(false); // Disable feedback box
 
             // Start the gaze tracker
             await window.webgazer.setGazeListener((data) => {
@@ -115,18 +124,30 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
 
         } catch (error) {
             console.error("Failed to initialize WebGazer:", error);
+            isInitializedRef.current = false; // Reset on error
         }
     }, [isCalibrating, isActive, checkGazeBounds]);
 
     const stopWebGazer = useCallback(() => {
-        if (window.webgazer) {
-            window.webgazer.end();
+        if (window.webgazer && isInitializedRef.current) {
+            try {
+                // Try to end WebGazer gracefully
+                window.webgazer.end();
+            } catch (error) {
+                // WebGazer's end() can throw if elements are already removed
+                console.warn('WebGazer cleanup error (safe to ignore):', error);
+            }
+
+            // Manually clean up DOM elements
             const videoElement = document.getElementById('webgazerVideoFeed');
             if (videoElement) videoElement.remove();
             const faceOverlay = document.getElementById('webgazerFaceOverlay');
             if (faceOverlay) faceOverlay.remove();
             const feedbackBox = document.getElementById('webgazerFaceFeedbackBox');
             if (feedbackBox) feedbackBox.remove();
+
+            // Mark as no longer initialized
+            isInitializedRef.current = false;
         }
     }, []);
 
