@@ -94,7 +94,7 @@ export default function InterviewPage() {
     const handleGazeViolation = useCallback(() => {
         if (stage !== 'interview') return;
 
-        setGazeViolations(prev => {
+        setGazeViolations((prev: number) => {
             const newCount = prev + 1;
             console.warn(`Gaze violation detected! Count: ${newCount}`);
 
@@ -114,13 +114,13 @@ export default function InterviewPage() {
         // Only start if we are in interview stage (after calibration)
         if (stage !== 'interview') return;
         if (!dcRef.current || dcRef.current.readyState !== 'open') return;
-        setHasStarted(prevHasStarted => {
+        setHasStarted((prevHasStarted: boolean) => {
             if (prevHasStarted) return true;
 
             const initialMessage = `Hello! I'm ready to begin the interview. Please introduce yourself and start with the first question.`;
 
             // Add initial message to transcript
-            setTranscriptMessages(prev => [...prev, {
+            setTranscriptMessages((prev) => [...prev, {
                 id: uuidv4(),
                 role: 'user',
                 content: initialMessage,
@@ -149,7 +149,7 @@ export default function InterviewPage() {
     }, [stage]);
 
     const togglePause = useCallback(() => {
-        setIsPaused(prev => {
+        setIsPaused((prev: boolean) => {
             const newState = !prev;
             if (streamRef.current) {
                 streamRef.current.getAudioTracks().forEach(track => track.enabled = newState);
@@ -239,7 +239,7 @@ export default function InterviewPage() {
                     if (textDelta && currentAssistantMessageRef.current) {
                         currentAssistantMessageRef.current.content += textDelta;
                         // Update UI state for real-time display
-                        setCurrentAssistantMessage(prev => prev ? {
+                        setCurrentAssistantMessage((prev: { content: string, timestamp: string } | null) => prev ? {
                             ...prev,
                             content: prev.content + textDelta
                         } : null);
@@ -494,7 +494,7 @@ export default function InterviewPage() {
         let interval: NodeJS.Timeout;
         if (isConnected && !isPaused && timeLeft > 0) {
             interval = setInterval(() => {
-                setTimeLeft((prev) => {
+                setTimeLeft((prev: number) => {
                     if (prev <= 1) {
                         clearInterval(interval);
                         stopSession(); // Auto-end session

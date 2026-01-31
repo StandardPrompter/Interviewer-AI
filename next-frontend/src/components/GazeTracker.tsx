@@ -60,11 +60,11 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             const relocateVideo = () => {
                 const videoElement = document.getElementById('webgazerVideoFeed');
                 const container = document.getElementById('user-video-container');
-                
+
                 if (videoElement && container) {
                     // Move video into container
                     container.appendChild(videoElement);
-                    
+
                     // Reset fixed positioning styles to fit container
                     videoElement.style.position = 'absolute';
                     videoElement.style.top = '0';
@@ -88,26 +88,26 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                         overlay.style.height = '100%';
                         overlay.style.zIndex = '20';
                     }
-                    
+
                     // Handle feedback box
                     const feedback = document.getElementById('webgazerFaceFeedbackBox');
                     if (feedback) {
-                         container.appendChild(feedback);
-                         feedback.style.zIndex = '30';
+                        container.appendChild(feedback);
+                        feedback.style.zIndex = '30';
                     }
                 } else if (videoElement) {
-                     // Fallback if container not found yet (retry or keep fixed)
-                     videoElement.style.position = 'fixed';
-                     videoElement.style.bottom = '20px';
-                     videoElement.style.right = '20px';
-                     videoElement.style.zIndex = '9999';
-                     videoElement.style.width = '200px';
-                     videoElement.style.height = 'auto';
-                     videoElement.style.borderRadius = '12px';
-                     videoElement.style.border = '2px solid rgba(59, 130, 246, 0.5)';
+                    // Fallback if container not found yet (retry or keep fixed)
+                    videoElement.style.position = 'fixed';
+                    videoElement.style.bottom = '20px';
+                    videoElement.style.right = '20px';
+                    videoElement.style.zIndex = '9999';
+                    videoElement.style.width = '200px';
+                    videoElement.style.height = 'auto';
+                    videoElement.style.borderRadius = '12px';
+                    videoElement.style.border = '2px solid rgba(59, 130, 246, 0.5)';
                 }
             };
-            
+
             // Try immediately and also after a short delay to ensure WebGazer created elements
             relocateVideo();
             setTimeout(relocateVideo, 500);
