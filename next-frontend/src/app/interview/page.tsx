@@ -57,6 +57,7 @@ export default function InterviewPage() {
     const dcRef = useRef<RTCDataChannel | null>(null);
     const audioRef = useRef<HTMLAudioElement | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
+    const userVideoRef = useRef<HTMLVideoElement | null>(null);
 
     // Proctoring State
     // Initial stage is calibration because preparation is handled in /preparation
@@ -195,9 +196,13 @@ export default function InterviewPage() {
 
             const ms = await navigator.mediaDevices.getUserMedia({
                 audio: true,
-                video: false
+                video: true
             });
             streamRef.current = ms;
+
+            if (userVideoRef.current) {
+                userVideoRef.current.srcObject = ms;
+            }
 
             const audioTrack = ms.getAudioTracks()[0];
             if (audioTrack) {
@@ -747,11 +752,20 @@ export default function InterviewPage() {
 
                 {/* RIGHT PANEL: User Video & Proctoring */}
                 <div className="w-1/2 bg-black relative flex flex-col">
-                    {/* User Video Container - WebGazer will inject video here */}
+                    {/* User Video Container */}
                     <div id="user-video-container" className="flex-1 w-full h-full relative overflow-hidden bg-slate-950">
-                        <div className="absolute inset-0 flex items-center justify-center text-slate-700">
-                            <span className="text-sm">Initializing Camera...</span>
-                        </div>
+                        <video
+                            ref={userVideoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className="w-full h-full object-cover transform scale-x-[-1]"
+                        />
+                        {!streamRef.current && (
+                            <div className="absolute inset-0 flex items-center justify-center text-slate-700">
+                                <span className="text-sm">Initializing Camera...</span>
+                            </div>
+                        )}
                     </div>
 
                     {/* Proctoring Warning Overlay */}

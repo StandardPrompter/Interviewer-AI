@@ -53,7 +53,8 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
             window.webgazer.clearData();
 
             // Configure WebGazer to avoid MediaPipe dependencies
-            window.webgazer.showVideo(true);
+            // We hide WebGazer's video because we render our own in InterviewPage for better control
+            window.webgazer.showVideo(false);
             window.webgazer.showFaceOverlay(false); // Disable face overlay to avoid MediaPipe
             window.webgazer.showFaceFeedbackBox(false); // Disable feedback box
 
@@ -151,14 +152,6 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                 videoObserverRef.current.disconnect();
                 videoObserverRef.current = null;
             }
-
-            // Manually clean up DOM elements
-            const videoElement = document.getElementById('webgazerVideoFeed');
-            if (videoElement) videoElement.remove();
-            const faceOverlay = document.getElementById('webgazerFaceOverlay');
-            if (faceOverlay) faceOverlay.remove();
-            const feedbackBox = document.getElementById('webgazerFaceFeedbackBox');
-            if (feedbackBox) feedbackBox.remove();
 
             // Mark as no longer initialized
             isInitializedRef.current = false;
