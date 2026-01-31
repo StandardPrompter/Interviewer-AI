@@ -41,9 +41,7 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
 
     const setupWebGazer = useCallback(async () => {
         try {
-            // Initialize but don't start predicting continuously yet until after calibration? 
-            // Actually WebGazer needs to run to calibrate.
-
+            // Check if webgazer is available
             if (!window.webgazer) return;
 
             // Clear any previous data
@@ -58,25 +56,62 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                 }
             }).begin();
 
-            // Hide the default video feed/face overlay if desired, or style it
-            // window.webgazer.showVideo(false); 
-            // window.webgazer.showFaceOverlay(false);
-            // window.webgazer.showFaceFeedbackBox(false);
+            // Relocate video feed to our custom container
+            const relocateVideo = () => {
+                const videoElement = document.getElementById('webgazerVideoFeed');
+                const container = document.getElementById('user-video-container');
+                
+                if (videoElement && container) {
+                    // Move video into container
+                    container.appendChild(videoElement);
+                    
+                    // Reset fixed positioning styles to fit container
+                    videoElement.style.position = 'absolute';
+                    videoElement.style.top = '0';
+                    videoElement.style.left = '0';
+                    videoElement.style.width = '100%';
+                    videoElement.style.height = '100%';
+                    videoElement.style.objectFit = 'cover';
+                    videoElement.style.zIndex = '10';
+                    videoElement.style.borderRadius = '0'; // Let container handle radius
+                    videoElement.style.margin = '0';
+                    videoElement.style.display = 'block';
 
-            // For now, let's keep video helpful for user to position themselves
-            const videoElement = document.getElementById('webgazerVideoFeed');
-            if (videoElement) {
-                videoElement.style.position = 'fixed';
-                videoElement.style.bottom = '20px';
-                videoElement.style.right = '20px';
-                videoElement.style.zIndex = '9999';
-                videoElement.style.width = '200px';
-                videoElement.style.height = 'auto';
-                videoElement.style.borderRadius = '12px';
-                videoElement.style.border = '2px solid rgba(59, 130, 246, 0.5)'; // Blue border
-                videoElement.style.boxShadow = '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)';
-                videoElement.style.display = 'block';
-            }
+                    // Also handle the face overlay canvas if it exists
+                    const overlay = document.getElementById('webgazerFaceOverlay');
+                    if (overlay) {
+                        container.appendChild(overlay);
+                        overlay.style.position = 'absolute';
+                        overlay.style.top = '0';
+                        overlay.style.left = '0';
+                        overlay.style.width = '100%';
+                        overlay.style.height = '100%';
+                        overlay.style.zIndex = '20';
+                    }
+                    
+                    // Handle feedback box
+                    const feedback = document.getElementById('webgazerFaceFeedbackBox');
+                    if (feedback) {
+                         container.appendChild(feedback);
+                         feedback.style.zIndex = '30';
+                    }
+                } else if (videoElement) {
+                     // Fallback if container not found yet (retry or keep fixed)
+                     videoElement.style.position = 'fixed';
+                     videoElement.style.bottom = '20px';
+                     videoElement.style.right = '20px';
+                     videoElement.style.zIndex = '9999';
+                     videoElement.style.width = '200px';
+                     videoElement.style.height = 'auto';
+                     videoElement.style.borderRadius = '12px';
+                     videoElement.style.border = '2px solid rgba(59, 130, 246, 0.5)';
+                }
+            };
+            
+            // Try immediately and also after a short delay to ensure WebGazer created elements
+            relocateVideo();
+            setTimeout(relocateVideo, 500);
+            setTimeout(relocateVideo, 2000);
 
         } catch (error) {
             console.error("Failed to initialize WebGazer:", error);
@@ -86,7 +121,6 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
     const stopWebGazer = useCallback(() => {
         if (window.webgazer) {
             window.webgazer.end();
-            // Also need to manually remove the video element if WebGazer doesn't do it cleanly
             const videoElement = document.getElementById('webgazerVideoFeed');
             if (videoElement) videoElement.remove();
             const faceOverlay = document.getElementById('webgazerFaceOverlay');

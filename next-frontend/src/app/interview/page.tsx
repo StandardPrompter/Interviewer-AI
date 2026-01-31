@@ -25,7 +25,7 @@ export default function InterviewPage() {
     const currentAssistantMessageRef = useRef<{ content: string, timestamp: string } | null>(null);
     const [currentAssistantMessage, setCurrentAssistantMessage] = useState<{ content: string, timestamp: string } | null>(null);
     const [isLoadingSession, setIsLoadingSession] = useState(true);
-    const [showTranscript, setShowTranscript] = useState(true);
+    const [showTranscript, setShowTranscript] = useState(false); // Default to false as requested (optional)
 
     useEffect(() => {
         // Get session_id from localStorage or generate new one
@@ -50,7 +50,8 @@ export default function InterviewPage() {
     const [isPaused, setIsPaused] = useState(false);
     const [isSavingTranscript, setIsSavingTranscript] = useState(false);
     const [aiStatus, setAiStatus] = useState<'listening' | 'thinking' | 'speaking'>('listening');
-    const [timeLeft, setTimeLeft] = useState(20 * 60); // 20 minutes in seconds
+    const TOTAL_TIME = 20 * 60; // 20 minutes
+    const [timeLeft, setTimeLeft] = useState(TOTAL_TIME);
 
     const pcRef = useRef<RTCPeerConnection | null>(null);
     const dcRef = useRef<RTCDataChannel | null>(null);
@@ -61,6 +62,20 @@ export default function InterviewPage() {
     // Initial stage is calibration because preparation is handled in /preparation
     const [stage, setStage] = useState<'calibration' | 'interview' | 'terminated'>('calibration');
     const [gazeViolations, setGazeViolations] = useState(0);
+    const [showGazeWarning, setShowGazeWarning] = useState(false);
+
+    // Agenda Stages logic
+    const interviewStages = [
+        { name: 'Introduction', start: 0, end: 0.15 }, // 0-15%
+        { name: 'Technical', start: 0.15, end: 0.70 }, // 15-70%
+        { name: 'Behavioral', start: 0.70, end: 0.90 }, // 70-90%
+        { name: 'Conclusion', start: 0.90, end: 1.0 }, // 90-100%
+    ];
+
+    const getCurrentInterviewStage = () => {
+        const progress = (TOTAL_TIME - timeLeft) / TOTAL_TIME;
+        return interviewStages.find(s => progress >= s.start && progress < s.end) || interviewStages[interviewStages.length - 1];
+    };
 
     const handleMalpracticeTermination = useCallback(async () => {
         setStage('terminated');
@@ -82,6 +97,11 @@ export default function InterviewPage() {
         setGazeViolations(prev => {
             const newCount = prev + 1;
             console.warn(`Gaze violation detected! Count: ${newCount}`);
+
+            // Show warning UI
+            setShowGazeWarning(true);
+            setTimeout(() => setShowGazeWarning(false), 3000);
+
             if (newCount > 5) {
                 handleMalpracticeTermination();
             }
@@ -241,7 +261,6 @@ export default function InterviewPage() {
                             content: finalContent,
                             timestamp: timestamp
                         }]);
-                        console.log('✓ Assistant response saved (from deltas):', finalContent.substring(0, 100) + '...');
                     }
                     // Fallback: try to extract from response.output if deltas didn't work
                     else if (event.response?.output) {
@@ -259,7 +278,6 @@ export default function InterviewPage() {
                                 content: assistantContent.trim(),
                                 timestamp: new Date().toISOString()
                             }]);
-                            console.log('✓ Assistant response saved (from output):', assistantContent.substring(0, 100) + '...');
                         }
                     }
 
@@ -450,10 +468,11 @@ export default function InterviewPage() {
         currentAssistantMessageRef.current = null;
         setCurrentAssistantMessage(null);
         setAiStatus('listening');
+        setTimeLeft(TOTAL_TIME);
 
         // Re-initialize connection
         await initRealtime();
-    }, [initRealtime]);
+    }, [initRealtime, TOTAL_TIME]);
 
     useEffect(() => {
         if (sessionId && !isLoadingSession) initRealtime();
@@ -529,21 +548,7 @@ export default function InterviewPage() {
             <main className="min-h-screen bg-slate-900 flex items-center justify-center p-6 font-sans">
                 <div className="max-w-md w-full bg-slate-800/90 backdrop-blur-xl rounded-3xl shadow-2xl shadow-black/50 border border-slate-700/50 p-12 text-center space-y-8">
                     <div className="relative w-24 h-24 mx-auto">
-                        <svg className="w-full h-full" viewBox="0 0 100 100">
-                            <circle className="text-slate-700 stroke-current" strokeWidth="6" cx="50" cy="50" r="40" fill="transparent" />
-                            <circle
-                                className="text-blue-500 stroke-current transition-all duration-500 ease-out animate-spin"
-                                strokeWidth="6"
-                                strokeLinecap="round"
-                                cx="50"
-                                cy="50"
-                                r="40"
-                                fill="transparent"
-                                strokeDasharray="251.2"
-                                strokeDashoffset="125.6"
-                                transform="rotate(-90 50 50)"
-                            />
-                        </svg>
+                        <div className="w-full h-full border-4 border-slate-700 border-t-blue-500 rounded-full animate-spin"></div>
                         <div className="absolute inset-0 flex items-center justify-center">
                             <Activity className="w-8 h-8 text-blue-400 animate-pulse" />
                         </div>
@@ -552,21 +557,18 @@ export default function InterviewPage() {
                         <h1 className="text-2xl font-bold text-slate-100 mb-2">Processing Interview</h1>
                         <p className="text-slate-400">Saving transcript and generating your summary...</p>
                         <p className="text-sm text-slate-500 font-medium">Please wait, redirecting to results...</p>
-                        <div className="pt-4">
-                            <div className="flex items-center justify-center gap-2 text-xs text-slate-500">
-                                <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse"></div>
-                                <span>This may take a few moments</span>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </main>
         );
     }
 
+    const currentStage = getCurrentInterviewStage();
+    const progressPercent = ((TOTAL_TIME - timeLeft) / TOTAL_TIME) * 100;
+
     return (
-        <main className="min-h-screen bg-slate-900 text-slate-100 font-sans flex flex-col">
-            {/* Gaze Tracker (Active during Calibration + Interview) */}
+        <main className="h-screen bg-slate-950 text-slate-100 font-sans flex flex-col overflow-hidden">
+            {/* Gaze Tracker */}
             {(stage === 'calibration' || stage === 'interview') && !isLoadingSession && (
                 <GazeTracker
                     isActive={stage === 'interview'}
@@ -576,172 +578,216 @@ export default function InterviewPage() {
                     onGazeViolation={handleGazeViolation}
                 />
             )}
-            {/* Top Navigation */}
-            <nav className="h-16 bg-slate-800/90 backdrop-blur-md border-b border-slate-700/50 sticky top-0 z-50 flex items-center justify-between px-8">
-                <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
-                        <Activity className="w-5 h-5 text-white" />
-                    </div>
-                    <span className="font-bold text-lg tracking-tight text-slate-100">InterviewPractice <span className="text-slate-400 font-medium">AI</span></span>
-                </div>
 
-                <div className="flex items-center gap-6">
+            {/* Top Navigation & Agenda Seeker */}
+            <nav className="h-24 bg-slate-900 border-b border-slate-800 flex flex-col justify-between shrink-0 z-50">
+                {/* Header Content */}
+                <div className="flex-1 flex items-center justify-between px-6">
                     <div className="flex items-center gap-3">
-                        <div className="text-right">
-                            <p className="text-[10px] uppercase font-bold text-slate-400 tracking-wider leading-none mb-1">Status</p>
-                            <p className={`text-xs font-bold ${isConnected ? 'text-emerald-500' : 'text-slate-400'}`}>
-                                {isConnected ? 'CONNECTED' : 'CONNECTING...'}
-                            </p>
+                        <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
+                            <Activity className="w-5 h-5 text-white" />
                         </div>
-                        <div className={`w-2.5 h-2.5 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-600'}`} />
+                        <span className="font-bold text-lg tracking-tight text-slate-100">Interview<span className="text-blue-500">AI</span></span>
                     </div>
-                    {/* Timer Display */}
-                    <div className="bg-slate-800 rounded-xl px-4 py-2 border border-slate-700/50 flex items-center gap-2">
-                        <Activity className="w-4 h-4 text-blue-400" />
-                        <span className={`text-sm font-mono font-bold ${timeLeft < 60 ? 'text-red-400 animate-pulse' : 'text-slate-100'}`}>
+
+                    {/* Timer */}
+                    <div className="flex flex-col items-center">
+                        <span className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Time Remaining</span>
+                        <span className={`text-2xl font-mono font-bold ${timeLeft < 60 ? 'text-red-500 animate-pulse' : 'text-slate-200'}`}>
                             {formatTime(timeLeft)}
                         </span>
                     </div>
 
-                    {/* Transcript Toggle */}
-                    <button
-                        onClick={() => setShowTranscript(!showTranscript)}
-                        className={`p-2 rounded-xl border border-slate-700/50 transition-all ${showTranscript ? 'bg-blue-600/20 text-blue-400 border-blue-500/30 ring-1 ring-blue-500/20' : 'bg-slate-800 text-slate-400 hover:text-slate-200 hover:bg-slate-700'
-                            }`}
-                        title={showTranscript ? "Hide Transcript" : "Show Transcript"}
-                    >
-                        {showTranscript ? <MessageSquare className="w-5 h-5" /> : <MessageSquareOff className="w-5 h-5" />}
-                    </button>
+                    {/* Controls */}
+                    <div className="flex items-center gap-4">
+                        <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${isConnected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                            <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
+                            <span className="text-xs font-bold uppercase">{isConnected ? 'Online' : 'Offline'}</span>
+                        </div>
+                        <button
+                            onClick={stopSession}
+                            className="px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-400 text-sm font-bold rounded-lg border border-red-500/20 transition-colors"
+                        >
+                            End Interview
+                        </button>
+                    </div>
+                </div>
+
+                {/* Agenda Seeker Bar */}
+                <div className="relative h-2 bg-slate-800 w-full group">
+                    {/* Progress Fill */}
+                    <div
+                        className="absolute top-0 left-0 h-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-all duration-1000 ease-linear"
+                        style={{ width: `${progressPercent}%` }}
+                    />
+
+                    {/* Stage Markers */}
+                    {interviewStages.map((s, idx) => (
+                        <div
+                            key={idx}
+                            className="absolute top-0 h-full border-l border-slate-900/50 flex flex-col items-start pt-3"
+                            style={{ left: `${s.start * 100}%` }}
+                        >
+                            <span className={`text-[10px] font-bold uppercase tracking-wider pl-1 transform -translate-y-[2px] transition-colors ${currentStage?.name === s.name ? 'text-blue-400' : 'text-slate-600'
+                                }`}>
+                                {s.name}
+                            </span>
+                        </div>
+                    ))}
+
+                    {/* Current Position Thumb */}
+                    <div
+                        className="absolute top-1/2 -mt-1.5 w-3 h-3 bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)] transform -translate-x-1/2 z-10 transition-all duration-1000 ease-linear"
+                        style={{ left: `${progressPercent}%` }}
+                    />
                 </div>
             </nav>
 
-            {/* Main Content - Centered Conversation View */}
-            <div className="flex-1 flex flex-col items-center justify-center p-8 max-w-4xl mx-auto w-full">
-                {/* Connection Status Indicator */}
-                <div className="mb-8 flex items-center gap-2 px-4 py-2 bg-slate-800 rounded-2xl border border-slate-700/50">
-                    <span className={`w-2 h-2 rounded-full transition-all duration-300 ${aiStatus === 'speaking' ? 'bg-blue-500 shadow-[0_0_12px_rgba(59,130,246,0.8)]' : aiStatus === 'thinking' ? 'bg-amber-500 animate-pulse' : 'bg-emerald-500'}`} />
-                    <span className="text-sm font-medium text-slate-300 uppercase tracking-wide">
-                        {aiStatus === 'speaking' ? 'AI Speaking' : aiStatus === 'thinking' ? 'AI Thinking' : 'Listening'}
-                    </span>
-                </div>
-
-                {/* Conversation Area */}
-                <div className="flex-1 w-full flex flex-col items-center justify-center space-y-8 mb-8">
-                    {/* AI Avatar */}
-                    <div className="relative group">
-                        {/* Animated Glow Effect */}
-                        <div className={`absolute -inset-1 bg-gradient-to-r from-blue-600 to-cyan-600 rounded-full blur transition-all duration-500 opacity-20 group-hover:opacity-40 pointer-events-none ${aiStatus === 'speaking' ? 'animate-pulse opacity-60' : ''}`} />
-
-                        <div className={`absolute -inset-4 bg-blue-500/10 rounded-full blur-2xl transition-all duration-300 ${aiStatus === 'speaking' ? 'opacity-100 scale-110' : 'opacity-0 scale-90'}`} />
-
-                        <div className={`w-48 h-48 rounded-full border-4 border-slate-700 shadow-2xl overflow-hidden relative transition-all duration-300 transform ${aiStatus === 'speaking' ? 'scale-105 ring-4 ring-blue-500/30 border-blue-500/50' : 'scale-100'}`}>
-                            {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                                src="/images/avatar.png"
-                                alt="AI Interviewer"
-                                className="w-full h-full object-cover"
-                            />
-                            {isPaused && (
-                                <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-[2px] flex items-center justify-center">
-                                    <Pause className="w-12 h-12 text-white fill-current" />
-                                </div>
+            {/* Split Screen Content */}
+            <div className="flex-1 flex overflow-hidden">
+                {/* LEFT PANEL: AI & Transcript */}
+                <div className="w-1/2 bg-slate-900 border-r border-slate-800 relative flex flex-col p-6">
+                    {/* AI Avatar Focus Area */}
+                    <div className="flex-1 flex flex-col items-center justify-center min-h-0 relative">
+                        {/* Status Label */}
+                        <div className="absolute top-0 left-0 px-3 py-1 bg-slate-800 rounded-full border border-slate-700 text-xs font-medium text-slate-400 mb-8 z-10">
+                            {aiStatus === 'speaking' ? (
+                                <span className="flex items-center gap-2 text-blue-400">
+                                    <span className="relative flex h-2 w-2">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                                        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500"></span>
+                                    </span>
+                                    Speaking...
+                                </span>
+                            ) : aiStatus === 'thinking' ? (
+                                <span className="flex items-center gap-2 text-amber-400">
+                                    <span className="animate-pulse w-2 h-2 bg-amber-400 rounded-full" />
+                                    Thinking...
+                                </span>
+                            ) : (
+                                <span className="flex items-center gap-2 text-emerald-400">
+                                    <Mic className="w-3 h-3" />
+                                    Listening...
+                                </span>
                             )}
+                        </div>
+
+                        {/* AI Avatar with Breathing Border */}
+                        <div className="relative">
+                            {/* Breathing Effect Ring */}
+                            <div className={`absolute -inset-4 rounded-full border-2 border-dashed border-blue-500/30 transition-all duration-1000 ${aiStatus === 'speaking' ? 'animate-spin-slow opacity-100 scale-110' : 'opacity-0 scale-90'
+                                }`} />
+                            <div className={`absolute -inset-1 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500 blur-md transition-all duration-500 ${aiStatus === 'speaking' ? 'opacity-70 scale-105 animate-pulse' : 'opacity-0 scale-100'
+                                }`} />
+
+                            <div className={`relative w-56 h-56 rounded-full overflow-hidden border-4 bg-slate-800 shadow-2xl transition-colors duration-300 ${aiStatus === 'speaking' ? 'border-blue-500' : 'border-slate-700'
+                                }`}>
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                    src="/images/avatar.png"
+                                    alt="AI"
+                                    className="w-full h-full object-cover"
+                                />
+                                {isPaused && (
+                                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center">
+                                        <Pause className="w-12 h-12 text-white" />
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
 
-                    {/* Transcript Display */}
-                    {showTranscript && (
-                        <div className="w-full max-w-2xl bg-slate-800/50 rounded-2xl border border-slate-700/50 p-6 max-h-64 overflow-y-auto space-y-3">
-                            {transcriptMessages.length === 0 && !currentAssistantMessage ? (
-                                <div className="text-center text-slate-400 py-8">
-                                    <p className="text-sm">Interview transcript will appear here...</p>
-                                    <p className="text-xs mt-2 opacity-60">Start speaking to begin</p>
-                                </div>
-                            ) : (
-                                <>
-                                    {transcriptMessages.slice(-5).map((msg, idx) => (
-                                        <div key={msg.id || idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                            <div className={`max-w-[80%] rounded-xl px-4 py-2 ${msg.role === 'user'
-                                                ? 'bg-blue-600 text-white'
-                                                : 'bg-slate-700 text-slate-100'
-                                                }`}>
-                                                <p className="text-sm">{msg.content}</p>
-                                                <p className="text-xs opacity-60 mt-1">
-                                                    {new Date(msg.timestamp).toLocaleTimeString()}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    ))}
+                    {/* Transcript Overlay / Bottom Section */}
+                    <div className={`mt-6 transition-all duration-500 ease-in-out flex flex-col ${showTranscript ? 'h-64' : 'h-12'}`}>
+                        <div className="flex items-center justify-between mb-2 shrink-0">
+                            <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Live Transcript</h3>
+                            <button
+                                onClick={() => setShowTranscript(!showTranscript)}
+                                className="text-xs text-blue-400 hover:text-blue-300 font-medium"
+                            >
+                                {showTranscript ? 'Hide' : 'Show'}
+                            </button>
+                        </div>
 
-                                    {/* Show current assistant message being typed in real-time */}
-                                    {currentAssistantMessage && currentAssistantMessage.content && (
-                                        <div className="flex justify-start">
-                                            <div className="max-w-[80%] rounded-xl px-4 py-2 bg-slate-700 text-slate-100 border-2 border-blue-500/30 animate-pulse">
-                                                <p className="text-sm">{currentAssistantMessage.content}</p>
-                                                <p className="text-xs opacity-60 mt-1 flex items-center gap-1">
-                                                    <span className="w-2 h-2 bg-blue-400 rounded-full animate-ping"></span>
-                                                    AI is speaking...
-                                                </p>
+                        {showTranscript && (
+                            <div className="flex-1 bg-slate-950/50 rounded-xl border border-slate-800 p-4 overflow-y-auto space-y-3 shadow-inner">
+                                {transcriptMessages.length === 0 && !currentAssistantMessage ? (
+                                    <p className="text-slate-600 text-sm text-center py-4 italic">Conversation will appear here...</p>
+                                ) : (
+                                    <>
+                                        {transcriptMessages.slice(-5).map((msg, i) => (
+                                            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed ${msg.role === 'user' ? 'bg-blue-600/20 text-blue-100 border border-blue-500/20' : 'bg-slate-800 text-slate-300 border border-slate-700'
+                                                    }`}>
+                                                    {msg.content}
+                                                </div>
                                             </div>
-                                        </div>
-                                    )}
-                                </>
-                            )}
+                                        ))}
+                                        {currentAssistantMessage && currentAssistantMessage.content && (
+                                            <div className="flex justify-start">
+                                                <div className="max-w-[85%] px-3 py-2 rounded-lg text-sm bg-slate-800 text-slate-300 border border-slate-700 animate-pulse">
+                                                    {currentAssistantMessage.content}
+                                                    <span className="inline-block w-1.5 h-3 ml-1 bg-blue-400 animate-blink aligns-middle" />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
 
-                            {/* Show transcription errors if any */}
-                            {transcriptionErrors.length > 0 && (
-                                <div className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl">
-                                    <p className="text-red-400 text-xs font-medium">Transcription Issues:</p>
-                                    {transcriptionErrors.slice(-3).map((error, idx) => (
-                                        <p key={idx} className="text-red-300 text-xs mt-1">{error}</p>
-                                    ))}
+                {/* RIGHT PANEL: User Video & Proctoring */}
+                <div className="w-1/2 bg-black relative flex flex-col">
+                    {/* User Video Container - WebGazer will inject video here */}
+                    <div id="user-video-container" className="flex-1 w-full h-full relative overflow-hidden bg-slate-950">
+                        <div className="absolute inset-0 flex items-center justify-center text-slate-700">
+                            <span className="text-sm">Initializing Camera...</span>
+                        </div>
+                    </div>
+
+                    {/* Proctoring Warning Overlay */}
+                    {showGazeWarning && (
+                        <div className="absolute top-6 right-6 z-50 animate-in slide-in-from-right fade-in duration-300">
+                            <div className="bg-red-500 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-4 border border-red-400">
+                                <div className="p-2 bg-white/20 rounded-full">
+                                    <AlertTriangle className="w-6 h-6" />
                                 </div>
-                            )}
+                                <div>
+                                    <h4 className="font-bold text-lg">Warning Detected</h4>
+                                    <p className="text-red-100 text-sm">Please keep your focus on the screen.</p>
+                                </div>
+                            </div>
                         </div>
                     )}
-                </div>
 
-                {/* Control Buttons */}
-                <div className="w-full max-w-2xl flex items-center justify-center gap-4">
-                    <button
-                        onClick={restartInterview}
-                        className="flex-1 bg-slate-700 hover:bg-slate-600 text-white h-14 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all active:scale-[0.98] border border-slate-600"
-                    >
-                        <RotateCcw className="w-5 h-5" />
-                        Restart
-                    </button>
-                    <button
-                        onClick={togglePause}
-                        className={`flex-1 h-14 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all active:scale-[0.98] ${isPaused
-                            ? 'bg-amber-500 hover:bg-amber-600 text-white shadow-lg shadow-amber-500/20'
-                            : 'bg-blue-600 hover:bg-blue-700 text-white'
-                            }`}
-                    >
-                        {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
-                        {isPaused ? 'Resume' : 'Pause'}
-                    </button>
-                    <button
-                        onClick={stopSession}
-                        className="flex-1 bg-red-600 hover:bg-red-700 text-white h-14 rounded-2xl font-bold flex items-center justify-center gap-3 transition-all active:scale-[0.98]"
-                    >
-                        <LogOut className="w-5 h-5" />
-                        End Interview
-                    </button>
-                </div>
-
-                {/* Mic Status Indicator */}
-                <div className="mt-6 flex items-center gap-2 text-sm text-slate-400">
-                    {isMicActive ? (
-                        <>
-                            <Mic className="w-4 h-4 text-emerald-500" />
-                            <span>Microphone Active</span>
-                        </>
-                    ) : (
-                        <>
-                            <MicOff className="w-4 h-4 text-slate-500" />
-                            <span>Microphone Muted</span>
-                        </>
-                    )}
+                    {/* Controls Overlay on User Side */}
+                    <div className="absolute bottom-8 left-0 right-0 flex items-center justify-center px-8 z-20">
+                        <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700 p-2 rounded-2xl flex gap-2 shadow-2xl">
+                            <button
+                                onClick={togglePause}
+                                className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${isPaused ? 'bg-amber-500 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                                    }`}
+                                title={isPaused ? "Resume" : "Pause"}
+                            >
+                                {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5" />}
+                            </button>
+                            <button
+                                className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${isMicActive ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-red-500/20 text-red-400'
+                                    }`}
+                            >
+                                {isMicActive ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
+                            </button>
+                            <button
+                                onClick={restartInterview}
+                                className="w-12 h-12 flex items-center justify-center rounded-xl bg-slate-800 text-slate-300 hover:bg-slate-700 transition-all"
+                                title="Restart"
+                            >
+                                <RotateCcw className="w-5 h-5" />
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
 
