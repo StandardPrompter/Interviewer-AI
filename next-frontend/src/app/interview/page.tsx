@@ -180,10 +180,17 @@ export default function InterviewPage() {
 
             const audioEl = document.createElement("audio");
             audioEl.autoplay = true;
+            // Append to document to ensure it's not garbage collected and can play
+            audioEl.style.display = 'none';
+            document.body.appendChild(audioEl);
             audioRef.current = audioEl;
 
             pc.ontrack = (e) => {
-                if (audioEl) audioEl.srcObject = e.streams[0];
+                if (audioEl) {
+                    audioEl.srcObject = e.streams[0];
+                    // Explicitly try to play
+                    audioEl.play().catch(e => console.error("Auto-play failed:", e));
+                }
             };
 
             const ms = await navigator.mediaDevices.getUserMedia({

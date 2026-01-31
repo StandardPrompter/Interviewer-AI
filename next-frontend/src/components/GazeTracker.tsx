@@ -72,24 +72,27 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
                 const container = document.getElementById('user-video-container');
 
                 if (videoElement && container) {
-                    // Move video into container
-                    container.appendChild(videoElement);
+                    // Check if already in container
+                    if (videoElement.parentElement !== container) {
+                        container.appendChild(videoElement);
+                    }
 
-                    // Reset fixed positioning styles to fit container
-                    videoElement.style.position = 'absolute';
-                    videoElement.style.top = '0';
-                    videoElement.style.left = '0';
-                    videoElement.style.width = '100%';
-                    videoElement.style.height = '100%';
-                    videoElement.style.objectFit = 'cover';
-                    videoElement.style.zIndex = '10';
-                    videoElement.style.borderRadius = '0'; // Let container handle radius
-                    videoElement.style.margin = '0';
-                    videoElement.style.display = 'block';
+                    // Force styles to ensure it fits container and stays there
+                    // We use setProperty with 'important' to override WebGazer's internal style updates
+                    videoElement.style.setProperty('position', 'absolute', 'important');
+                    videoElement.style.setProperty('top', '0', 'important');
+                    videoElement.style.setProperty('left', '0', 'important');
+                    videoElement.style.setProperty('width', '100%', 'important');
+                    videoElement.style.setProperty('height', '100%', 'important');
+                    videoElement.style.setProperty('object-fit', 'cover', 'important');
+                    videoElement.style.setProperty('z-index', '10', 'important');
+                    videoElement.style.setProperty('border-radius', '0', 'important');
+                    videoElement.style.setProperty('margin', '0', 'important');
+                    videoElement.style.setProperty('display', 'block', 'important');
 
                     // Also handle the face overlay canvas if it exists
                     const overlay = document.getElementById('webgazerFaceOverlay');
-                    if (overlay) {
+                    if (overlay && overlay.parentElement !== container) {
                         container.appendChild(overlay);
                         overlay.style.position = 'absolute';
                         overlay.style.top = '0';
@@ -101,60 +104,31 @@ export default function GazeTracker({ onGazeViolation, onCalibrationComplete, is
 
                     // Handle feedback box
                     const feedback = document.getElementById('webgazerFaceFeedbackBox');
-                    if (feedback) {
+                    if (feedback && feedback.parentElement !== container) {
                         container.appendChild(feedback);
                         feedback.style.zIndex = '30';
                     }
 
-                    // Disconnect observer once successful
-                    if (videoObserverRef.current) {
-                        videoObserverRef.current.disconnect();
-                        videoObserverRef.current = null;
-                    }
-
                     return true;
-                } else if (videoElement) {
-                    // Fallback if container not found yet
-                    videoElement.style.position = 'fixed';
-                    videoElement.style.bottom = '20px';
-                    videoElement.style.right = '20px';
-                    videoElement.style.zIndex = '9999';
-                    videoElement.style.width = '200px';
-                    videoElement.style.height = 'auto';
-                    videoElement.style.borderRadius = '12px';
-                    videoElement.style.border = '2px solid rgba(59, 130, 246, 0.5)';
                 }
                 return false;
             };
 
-            // Try relocation immediately
-            if (!relocateVideo()) {
-                // Set up MutationObserver to watch for video element creation
-                videoObserverRef.current = new MutationObserver(() => {
-                    if (relocateVideo()) {
-                        // Successfully relocated, stop observing
-                        if (videoObserverRef.current) {
-                            videoObserverRef.current.disconnect();
-                            videoObserverRef.current = null;
-                        }
-                    }
-                });
+            // Aggressive style enforcement loop
+            // WebGazer might try to reset styles or position, so we force it back
+            const intervalId = setInterval(relocateVideo, 100);
 
-                // Observe the entire document for new elements
-                videoObserverRef.current.observe(document.body, {
-                    childList: true,
-                    subtree: true
-                });
+            // Store interval ID for cleanup
+            // We'll attach it to the window object or a ref if needed, 
+            // but effectively clear it on cleanup
+            const cleanupInterval = () => clearInterval(intervalId);
 
-                // Fallback timeout to stop observing after 5 seconds
-                setTimeout(() => {
-                    relocateVideo(); // One last try
-                    if (videoObserverRef.current) {
-                        videoObserverRef.current.disconnect();
-                        videoObserverRef.current = null;
-                    }
-                }, 5000);
-            }
+            // Stop checking after 10 seconds (usually enough time for stabilization)
+            setTimeout(cleanupInterval, 10000);
+
+            // Also return cleanup for the useEffect
+            return cleanupInterval;
+
 
         } catch (error) {
             console.error("Failed to initialize WebGazer:", error);
