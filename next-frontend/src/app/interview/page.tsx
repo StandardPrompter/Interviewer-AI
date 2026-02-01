@@ -64,6 +64,14 @@ export default function InterviewPage() {
     const [gazeViolations, setGazeViolations] = useState(0);
     const [showGazeWarning, setShowGazeWarning] = useState(false);
 
+    // Interview stage tracking for dynamic prompt switching
+    const [currentInterviewStageName, setCurrentInterviewStageName] = useState<string>('introduction');
+    const [interviewDecision, setInterviewDecision] = useState<{
+        decision: string;
+        confidence: number;
+        reasoning: string;
+    } | null>(null);
+
     // Agenda Stages logic
     const interviewStages = [
         { name: 'Introduction', start: 0, end: 0.15 }, // 0-15%
@@ -346,6 +354,40 @@ export default function InterviewPage() {
                     setTranscriptionErrors(prev => [...prev, event.error?.message || 'Unknown transcription error']);
                 }
 
+                // Handle end_interview function call
+                if (event.type === 'response.function_call_arguments.done') {
+                    console.log('🔧 Function call completed:', event.name, event.arguments);
+                    if (event.name === 'end_interview') {
+                        try {
+                            const args = JSON.parse(event.arguments);
+                            console.log('🏁 end_interview called:', args);
+                            setInterviewDecision({
+                                decision: args.decision,
+                                confidence: args.confidence,
+                                reasoning: args.reasoning
+                            });
+
+                            // Send function call output to acknowledge
+                            const outputEvent = {
+                                type: "conversation.item.create",
+                                item: {
+                                    type: "function_call_output",
+                                    call_id: event.call_id,
+                                    output: JSON.stringify({ status: "acknowledged", message: "Interview ended successfully" })
+                                }
+                            };
+                            dcRef.current?.send(JSON.stringify(outputEvent));
+
+                            // Let AI give closing remarks then stop session
+                            setTimeout(() => {
+                                stopSession();
+                            }, 5000);
+                        } catch (e) {
+                            console.error('Failed to parse end_interview args:', e);
+                        }
+                    }
+                }
+
                 // Manage AI Status based on events
                 if (event.type === 'response.audio.delta') setAiStatus('speaking');
                 if (event.type === 'input_audio_buffer.speech_started') setAiStatus('listening');
@@ -605,6 +647,60 @@ export default function InterviewPage() {
         }
         return () => clearInterval(interval);
     }, [isConnected, isPaused, timeLeft, stopSession]);
+
+    // Stage change detection - fetch new prompt when stage changes
+    useEffect(() => {
+        if (!isConnected || !dcRef.current || dcRef.current.readyState !== 'open') return;
+
+        const currentStage = getCurrentInterviewStage();
+        const stageName = currentStage?.name.toLowerCase() || 'introduction';
+
+        // Only trigger if stage actually changed
+        if (stageName === currentInterviewStageName) return;
+
+        console.log(`📊 Stage changed: ${currentInterviewStageName} → ${stageName}`);
+        setCurrentInterviewStageName(stageName);
+
+        // Fetch new stage prompt from API
+        const fetchStagePrompt = async () => {
+            try {
+                const response = await fetch('/api/get-stage-prompt', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        stage: stageName
+                    }),
+                });
+
+                if (!response.ok) {
+                    console.error('Failed to fetch stage prompt:', await response.text());
+                    return;
+                }
+
+                const data = await response.json();
+                console.log(`✓ Received ${stageName} prompt, updating session...`);
+
+                // Send session.update to OpenAI with new instructions
+                const sessionUpdateEvent = {
+                    type: "session.update",
+                    session: {
+                        instructions: data.prompt,
+                        tools: data.tools,
+                    }
+                };
+
+                dcRef.current?.send(JSON.stringify(sessionUpdateEvent));
+                console.log(`✓ Session updated with ${stageName} instructions`);
+
+            } catch (error) {
+                console.error('Error fetching stage prompt:', error);
+            }
+        };
+
+        fetchStagePrompt();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [timeLeft, isConnected, sessionId]);
 
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);

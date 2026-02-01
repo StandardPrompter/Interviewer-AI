@@ -61,7 +61,33 @@ export async function POST(req: Request) {
                 instructions: instructions,
                 input_audio_transcription: {
                     model: 'gpt-4o-mini-transcribe'
-                }
+                },
+                tools: [
+                    {
+                        type: "function",
+                        name: "end_interview",
+                        description: "End the interview when you have conclusive evidence to make a hiring decision. Call this when you have enough information to confidently recommend hire or no-hire.",
+                        parameters: {
+                            type: "object",
+                            properties: {
+                                decision: {
+                                    type: "string",
+                                    enum: ["strong_hire", "hire", "no_hire", "strong_no_hire"],
+                                    description: "Your hiring recommendation based on the interview"
+                                },
+                                confidence: {
+                                    type: "number",
+                                    description: "Confidence level 0-100 in your decision"
+                                },
+                                reasoning: {
+                                    type: "string",
+                                    description: "Brief explanation for your decision"
+                                }
+                            },
+                            required: ["decision", "confidence", "reasoning"]
+                        }
+                    }
+                ]
             }),
         });
 
