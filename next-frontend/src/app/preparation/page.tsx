@@ -183,6 +183,7 @@ function PreparationContent() {
                     <GazeTracker
                         isActive={true}
                         onCalibrationComplete={onCalibrationComplete}
+                        videoRef={videoRef}
                     />
                 </div>
             ) : (

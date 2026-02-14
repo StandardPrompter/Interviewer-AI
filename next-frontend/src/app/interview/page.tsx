@@ -772,6 +772,7 @@ export default function InterviewPage() {
                         setStage('interview');
                     }}
                     onGazeViolation={handleGazeViolation}
+                    videoRef={userVideoRef}
                 />
             )}
 

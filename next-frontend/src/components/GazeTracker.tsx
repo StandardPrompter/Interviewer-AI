@@ -1,223 +1,316 @@
 "use client";
 
-import Script from 'next/script';
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { Eye, AlertTriangle, Crosshair } from 'lucide-react';
+import { useEffect, useRef, useCallback } from 'react';
+import { Eye, AlertTriangle } from 'lucide-react';
+import { FaceLandmarker, FilesetResolver, FaceLandmarkerResult } from '@mediapipe/tasks-vision';
 
 interface GazeTrackerProps {
     onGazeViolation?: () => void;
     onCalibrationComplete?: () => void;
     isActive: boolean;
     skipCalibration?: boolean;
+    videoRef?: React.RefObject<HTMLVideoElement | null>;
 }
 
-export default function GazeTracker({ onGazeViolation, onCalibrationComplete, isActive, skipCalibration = false }: GazeTrackerProps) {
-    const [scriptLoaded, setScriptLoaded] = useState(false);
-    const [isCalibrating, setIsCalibrating] = useState(!skipCalibration);
-    const [calibrationPoints, setCalibrationPoints] = useState<number>(0);
-    const [gazeStatus, setGazeStatus] = useState<'safe' | 'warning' | 'calibrating'>('calibrating');
-    const warningTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const isInitializedRef = useRef<boolean>(false);
-    const videoObserverRef = useRef<MutationObserver | null>(null);
+// Landmark indices for head pose estimation (MediaPipe Face Mesh)
+const NOSE_TIP = 1;
+const LEFT_EAR = 234;
+const RIGHT_EAR = 454;
+const FOREHEAD = 10;
+const CHIN = 152;
 
-    const checkGazeBounds = useCallback((x: number, y: number) => {
-        const { innerWidth, innerHeight } = window;
-        const margin = 100; // Allow some margin outside the viewport
+// Thresholds for "looking away" detection
+const YAW_THRESHOLD = 25;       // degrees - head turned left/right
+const PITCH_THRESHOLD = 20;     // degrees - head tilted up/down
+const AWAY_DURATION_MS = 2000;  // 2 seconds of looking away = 1 violation
+const DETECTION_INTERVAL_MS = 100; // Run detection every 100ms
 
-        const isOutside = x < -margin || x > innerWidth + margin || y < -margin || y > innerHeight + margin;
+function calculateHeadPose(landmarks: { x: number; y: number; z: number }[]) {
+    const nose = landmarks[NOSE_TIP];
+    const leftEar = landmarks[LEFT_EAR];
+    const rightEar = landmarks[RIGHT_EAR];
+    const forehead = landmarks[FOREHEAD];
+    const chin = landmarks[CHIN];
 
-        if (isOutside) {
-            setGazeStatus('warning');
-            if (!warningTimeoutRef.current) {
-                warningTimeoutRef.current = setTimeout(() => {
-                    if (onGazeViolation) onGazeViolation();
-                }, 2000); // 2 seconds of looking away triggers violation
-            }
-        } else {
-            setGazeStatus('safe');
-            if (warningTimeoutRef.current) {
-                clearTimeout(warningTimeoutRef.current);
-                warningTimeoutRef.current = null;
-            }
-        }
+    // Calculate yaw (left-right rotation)
+    // When facing straight, nose x is midway between ears
+    const earMidX = (leftEar.x + rightEar.x) / 2;
+    const earWidth = Math.abs(rightEar.x - leftEar.x);
+
+    // Normalized deviation of nose from ear midpoint
+    // earWidth is used as a scale factor for robustness
+    const yawRatio = earWidth > 0.001 ? (nose.x - earMidX) / earWidth : 0;
+    // Convert to approximate degrees (empirical mapping)
+    const yaw = yawRatio * 90;
+
+    // Calculate pitch (up-down rotation)
+    const faceMidY = (forehead.y + chin.y) / 2;
+    const faceHeight = Math.abs(chin.y - forehead.y);
+
+    const pitchRatio = faceHeight > 0.001 ? (nose.y - faceMidY) / faceHeight : 0;
+    const pitch = pitchRatio * 90;
+
+    return { yaw, pitch };
+}
+
+export default function GazeTracker({
+    onGazeViolation,
+    onCalibrationComplete,
+    isActive,
+    skipCalibration = false,
+    videoRef
+}: GazeTrackerProps) {
+    // Use refs for all mutable state to avoid stale closure issues
+    const isActiveRef = useRef(isActive);
+    const onGazeViolationRef = useRef(onGazeViolation);
+    const faceLandmarkerRef = useRef<FaceLandmarker | null>(null);
+    const detectionLoopRef = useRef<number | null>(null);
+    const awayStartRef = useRef<number | null>(null);
+    const gazeStatusRef = useRef<'safe' | 'warning'>('safe');
+    const statusElementRef = useRef<HTMLDivElement | null>(null);
+    const isInitializedRef = useRef(false);
+    const fallbackVideoRef = useRef<HTMLVideoElement | null>(null);
+
+    // Keep refs in sync with prop changes
+    useEffect(() => {
+        isActiveRef.current = isActive;
+    }, [isActive]);
+
+    useEffect(() => {
+        onGazeViolationRef.current = onGazeViolation;
     }, [onGazeViolation]);
 
-    const setupWebGazer = useCallback(async () => {
-        try {
-            // Check if webgazer is available and not already initialized
-            if (!window.webgazer || isInitializedRef.current) return;
-
-            // Mark as initialized
-            isInitializedRef.current = true;
-
-            // Clear any previous data
-            window.webgazer.clearData();
-
-            // Configure WebGazer
-            // We hide WebGazer's video because we render our own in InterviewPage
-            window.webgazer.showVideo(false);
-            window.webgazer.showFaceOverlay(false);
-            window.webgazer.showFaceFeedbackBox(false);
-
-            // If skipping calibration, hide points immediately
-            if (skipCalibration) {
-                window.webgazer.showPredictionPoints(false);
-            }
-
-            // Start the gaze tracker
-            await window.webgazer.setGazeListener((data) => {
-                if (data) {
-                    if (!isCalibrating && isActive) {
-                        checkGazeBounds(data.x, data.y);
-                    }
-                }
-            }).begin();
-
-            // Force hide video element if it appears
-            const hideVideo = () => {
-                const videoElement = document.getElementById('webgazerVideoFeed');
-                if (videoElement) {
-                    videoElement.style.display = 'none';
-                    videoElement.style.visibility = 'hidden';
-                    videoElement.style.width = '0px';
-                    videoElement.style.height = '0px';
-                }
-                const faceOverlay = document.getElementById('webgazerFaceOverlay');
-                if (faceOverlay) {
-                    faceOverlay.style.display = 'none';
-                }
-                const feedbackBox = document.getElementById('webgazerFaceFeedbackBox');
-                if (feedbackBox) {
-                    feedbackBox.style.display = 'none';
-                }
-            };
-
-            const intervalId = setInterval(hideVideo, 500);
-            const cleanupInterval = () => clearInterval(intervalId);
-            setTimeout(cleanupInterval, 10000);
-            return cleanupInterval;
-
-        } catch (error) {
-            console.error("Failed to initialize WebGazer:", error);
-            isInitializedRef.current = false; // Reset on error
+    // Signal calibration complete immediately since we don't need calibration
+    useEffect(() => {
+        if (skipCalibration && onCalibrationComplete) {
+            onCalibrationComplete();
         }
-    }, [isCalibrating, isActive, checkGazeBounds, skipCalibration]);
+    }, [skipCalibration, onCalibrationComplete]);
 
-    const stopWebGazer = useCallback(() => {
-        if (window.webgazer && isInitializedRef.current) {
-            try {
-                // Try to end WebGazer gracefully
-                window.webgazer.end();
-            } catch (error) {
-                // WebGazer's end() can throw if elements are already removed
-                console.warn('WebGazer cleanup error (safe to ignore):', error);
-            }
+    const updateStatusUI = useCallback((status: 'safe' | 'warning') => {
+        if (gazeStatusRef.current === status) return;
+        gazeStatusRef.current = status;
+        // Force re-render of status indicator via DOM manipulation for performance
+        // (avoids re-rendering the entire component on every frame)
+        const el = statusElementRef.current;
+        if (!el) return;
 
-            // Disconnect observer if still active
-            if (videoObserverRef.current) {
-                videoObserverRef.current.disconnect();
-                videoObserverRef.current = null;
-            }
-
-            // Mark as no longer initialized
-            isInitializedRef.current = false;
+        if (status === 'warning') {
+            el.className = 'fixed bottom-6 left-6 z-50 px-4 py-2 rounded-xl border backdrop-blur-md transition-colors duration-300 flex items-center gap-3 shadow-lg bg-red-500/20 border-red-500/50 text-red-200';
+            el.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5 animate-pulse"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/></svg>
+                <span class="font-bold uppercase text-xs tracking-wider">Focus on Screen</span>
+            `;
+        } else {
+            el.className = 'fixed bottom-6 left-6 z-50 px-4 py-2 rounded-xl border backdrop-blur-md transition-colors duration-300 flex items-center gap-3 shadow-lg bg-emerald-500/20 border-emerald-500/50 text-emerald-200';
+            el.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-5 h-5"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></svg>
+                <span class="font-bold uppercase text-xs tracking-wider">Proctoring Active</span>
+            `;
         }
     }, []);
 
-    // Initial setup when script is loaded
-    useEffect(() => {
-        if (scriptLoaded && window.webgazer) {
-            setupWebGazer();
+    const processDetection = useCallback((result: FaceLandmarkerResult) => {
+        if (!isActiveRef.current) return;
+
+        const now = Date.now();
+
+        if (!result.faceLandmarks || result.faceLandmarks.length === 0) {
+            // No face detected — treat as looking away after a brief grace period
+            if (!awayStartRef.current) {
+                awayStartRef.current = now;
+            }
+            updateStatusUI('warning');
+        } else {
+            const landmarks = result.faceLandmarks[0];
+            const { yaw, pitch } = calculateHeadPose(landmarks);
+
+            const isLookingAway = Math.abs(yaw) > YAW_THRESHOLD || Math.abs(pitch) > PITCH_THRESHOLD;
+
+            if (isLookingAway) {
+                if (!awayStartRef.current) {
+                    awayStartRef.current = now;
+                }
+                updateStatusUI('warning');
+            } else {
+                // Looking at screen — reset
+                awayStartRef.current = null;
+                updateStatusUI('safe');
+            }
         }
-        return () => {
-            // Cleanup handled in detailed cleanup function
-            stopWebGazer();
+
+        // Check if away duration exceeded threshold
+        if (awayStartRef.current && (now - awayStartRef.current) >= AWAY_DURATION_MS) {
+            // Fire violation
+            console.warn('🚨 Gaze violation: looked away for 2+ seconds');
+            if (onGazeViolationRef.current) {
+                onGazeViolationRef.current();
+            }
+            // Reset the timer so the next violation needs another 2 seconds
+            awayStartRef.current = now;
+        }
+    }, [updateStatusUI]);
+
+    const startDetectionLoop = useCallback((video: HTMLVideoElement) => {
+        const detect = () => {
+            if (!faceLandmarkerRef.current || !isActiveRef.current) {
+                detectionLoopRef.current = window.setTimeout(() => {
+                    detectionLoopRef.current = requestAnimationFrame(detect) as unknown as number;
+                }, DETECTION_INTERVAL_MS);
+                return;
+            }
+
+            if (video.readyState >= 2) { // HAVE_CURRENT_DATA
+                try {
+                    const result = faceLandmarkerRef.current.detectForVideo(video, Date.now());
+                    processDetection(result);
+                } catch (err) {
+                    console.warn('Face detection frame error:', err);
+                }
+            }
+
+            // Schedule next detection
+            detectionLoopRef.current = window.setTimeout(() => {
+                detectionLoopRef.current = requestAnimationFrame(detect) as unknown as number;
+            }, DETECTION_INTERVAL_MS);
         };
-    }, [scriptLoaded, setupWebGazer, stopWebGazer]);
 
-    const handleCalibrationClick = (pointId: string) => {
-        // In a real implementation, we'd track specific points. 
-        // For simplicity, we just count clicks appropriately spread out.
-        setCalibrationPoints(prev => prev + 1);
+        detect();
+    }, [processDetection]);
 
-        // Hide the clicked point (hacky simple calibration flow)
-        const btn = document.getElementById(pointId);
-        if (btn) btn.style.display = 'none';
+    // Initialize FaceLandmarker and start detection
+    useEffect(() => {
+        if (isInitializedRef.current) return;
 
-        if (calibrationPoints >= 8) { // 9 points total (0-8)
-            setIsCalibrating(false);
-            setGazeStatus('safe');
-            // Turn off predictions markers after calibration
-            window.webgazer.showPredictionPoints(false);
-            if (onCalibrationComplete) onCalibrationComplete();
-        }
-    };
+        let cancelled = false;
+
+        const init = async () => {
+            try {
+                console.log('🔧 Initializing FaceLandmarker...');
+
+                const vision = await FilesetResolver.forVisionTasks(
+                    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
+                );
+
+                if (cancelled) return;
+
+                const landmarker = await FaceLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+                        delegate: 'GPU'
+                    },
+                    runningMode: 'VIDEO',
+                    numFaces: 1,
+                    outputFaceBlendshapes: false,
+                    outputFacialTransformationMatrixes: false,
+                });
+
+                if (cancelled) {
+                    landmarker.close();
+                    return;
+                }
+
+                faceLandmarkerRef.current = landmarker;
+                isInitializedRef.current = true;
+                console.log('✅ FaceLandmarker initialized');
+
+                // Get video element — prefer passed ref, otherwise create our own
+                let video: HTMLVideoElement | null = videoRef?.current || null;
+
+                if (!video) {
+                    // Create a hidden video element with webcam stream
+                    console.log('📹 Creating fallback video element for gaze detection...');
+                    video = document.createElement('video');
+                    video.setAttribute('autoplay', '');
+                    video.setAttribute('playsinline', '');
+                    video.style.position = 'absolute';
+                    video.style.top = '-9999px';
+                    video.style.left = '-9999px';
+                    video.style.width = '1px';
+                    video.style.height = '1px';
+                    document.body.appendChild(video);
+                    fallbackVideoRef.current = video;
+
+                    try {
+                        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                        if (cancelled) {
+                            stream.getTracks().forEach(t => t.stop());
+                            return;
+                        }
+                        video.srcObject = stream;
+                        await video.play();
+                    } catch (err) {
+                        console.error('Failed to get webcam for gaze detection:', err);
+                        return;
+                    }
+                }
+
+                // Wait for video to be ready
+                const waitForVideo = () => {
+                    return new Promise<void>((resolve) => {
+                        const check = () => {
+                            if (video && video.readyState >= 2) {
+                                resolve();
+                            } else {
+                                setTimeout(check, 100);
+                            }
+                        };
+                        check();
+                    });
+                };
+
+                await waitForVideo();
+                if (cancelled) return;
+
+                console.log('▶️ Starting gaze detection loop');
+                startDetectionLoop(video);
+
+            } catch (error) {
+                console.error('Failed to initialize FaceLandmarker:', error);
+                isInitializedRef.current = false;
+            }
+        };
+
+        init();
+
+        return () => {
+            cancelled = true;
+
+            // Cancel detection loop
+            if (detectionLoopRef.current !== null) {
+                cancelAnimationFrame(detectionLoopRef.current);
+                detectionLoopRef.current = null;
+            }
+
+            // Close face landmarker
+            if (faceLandmarkerRef.current) {
+                faceLandmarkerRef.current.close();
+                faceLandmarkerRef.current = null;
+            }
+
+            // Clean up fallback video
+            if (fallbackVideoRef.current) {
+                const stream = fallbackVideoRef.current.srcObject as MediaStream;
+                if (stream) {
+                    stream.getTracks().forEach(t => t.stop());
+                }
+                fallbackVideoRef.current.remove();
+                fallbackVideoRef.current = null;
+            }
+
+            isInitializedRef.current = false;
+        };
+    }, [startDetectionLoop, videoRef]);
+
+    if (!isActive) return null;
 
     return (
-        <>
-            <Script
-                src="https://webgazer.cs.brown.edu/webgazer.js"
-                strategy="afterInteractive"
-                onLoad={() => setScriptLoaded(true)}
-            />
-
-            {/* Calibration Overlay */}
-            {scriptLoaded && isCalibrating && (
-                <div className="fixed inset-0 z-[100] bg-slate-900/95 flex flex-col items-center justify-center">
-                    <div className="text-center mb-8 text-slate-100 max-w-lg">
-                        <Crosshair className="w-12 h-12 text-blue-500 mx-auto mb-4" />
-                        <h2 className="text-2xl font-bold mb-2">Eye Calibration Required</h2>
-                        <p className="text-slate-400">
-                            Please click on each of the 9 red dots on the screen while looking directly at them.
-                            This ensures accurate gaze detection during your interview.
-                        </p>
-                        <div className="mt-4 p-4 bg-slate-800 rounded-lg text-sm text-yellow-400 border border-yellow-500/20">
-                            Make sure your face is well-lit and centered in the camera feed (bottom right).
-                        </div>
-                    </div>
-
-                    {/* Calibration Points Grid - Absolute Positioning */}
-                    {[
-                        { id: 'pt-tl', top: '20px', left: '20px' },
-                        { id: 'pt-tm', top: '20px', left: '50%', transform: 'translateX(-50%)' },
-                        { id: 'pt-tr', top: '20px', right: '20px' },
-                        { id: 'pt-ml', top: '50%', left: '20px', transform: 'translateY(-50%)' },
-                        { id: 'pt-mm', top: '50%', left: '50%', transform: 'translate(-50%, -50%)' },
-                        { id: 'pt-mr', top: '50%', right: '20px', transform: 'translateY(-50%)' },
-                        { id: 'pt-bl', bottom: '20px', left: '20px' },
-                        { id: 'pt-bm', bottom: '20px', left: '50%', transform: 'translateX(-50%)' },
-                        { id: 'pt-br', bottom: '20px', right: '20px' },
-                    ].map((pt) => (
-                        <button
-                            key={pt.id}
-                            id={pt.id}
-                            onClick={() => handleCalibrationClick(pt.id)}
-                            className="absolute w-8 h-8 bg-red-500 rounded-full border-4 border-white shadow-lg hover:scale-125 transition-transform cursor-crosshair animate-pulse"
-                            style={{ ...pt }}
-                        />
-                    ))}
-                </div>
-            )}
-
-            {/* Status Indicator (Only visible when active and not calibrating) */}
-            {!isCalibrating && isActive && (
-                <div className={`fixed bottom-6 left-6 z-50 px-4 py-2 rounded-xl border backdrop-blur-md transition-colors duration-300 flex items-center gap-3 shadow-lg ${gazeStatus === 'warning'
-                    ? 'bg-red-500/20 border-red-500/50 text-red-200'
-                    : 'bg-emerald-500/20 border-emerald-500/50 text-emerald-200'
-                    }`}>
-                    {gazeStatus === 'warning' ? (
-                        <>
-                            <AlertTriangle className="w-5 h-5 animate-pulse" />
-                            <span className="font-bold uppercase text-xs tracking-wider">Focus on Screen</span>
-                        </>
-                    ) : (
-                        <>
-                            <Eye className="w-5 h-5" />
-                            <span className="font-bold uppercase text-xs tracking-wider">Proctoring Active</span>
-                        </>
-                    )}
-                </div>
-            )}
-        </>
+        <div
+            ref={statusElementRef}
+            className="fixed bottom-6 left-6 z-50 px-4 py-2 rounded-xl border backdrop-blur-md transition-colors duration-300 flex items-center gap-3 shadow-lg bg-emerald-500/20 border-emerald-500/50 text-emerald-200"
+        >
+            <Eye className="w-5 h-5" />
+            <span className="font-bold uppercase text-xs tracking-wider">Proctoring Active</span>
+        </div>
     );
 }
