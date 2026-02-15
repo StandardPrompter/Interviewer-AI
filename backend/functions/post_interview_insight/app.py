@@ -12,6 +12,13 @@ api_key = os.environ.get("OPENAI_API_KEY")
 transcript_bucket = os.environ.get("TRANSCRIPT_BUCKET_NAME")
 persona_table_name = os.environ.get("PERSONA_TABLE_NAME")
 
+from openai import OpenAI
+from langfuse.decorators import observe
+
+# Initialize OpenAI Client
+client = OpenAI()
+
+@observe()
 def lambda_handler(event, context):
     """
     Handler for Post Interview Insight.
@@ -89,20 +96,15 @@ def lambda_handler(event, context):
         
         user_prompt = f"Transcript:\n{transcript_text}"
         
-        openai_response = requests.post(
-            "https://api.openai.com/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "gpt-4o",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "response_format": { "type": "json_object" }
-            }
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={ "type": "json_object" }
         )
-        openai_response.raise_for_status()
-        insights = json.loads(openai_response.json()["choices"][0]["message"]["content"])
+        insights = json.loads(completion.choices[0].message.content)
         
         # 4. Save insights to DynamoDB
         print(f"Saving insights to DynamoDB table {persona_table_name}...")

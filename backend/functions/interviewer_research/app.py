@@ -13,6 +13,13 @@ openai_api_key = os.environ.get("OPENAI_API_KEY")
 interviewer_table_name = os.environ.get("LINKEDIN_TABLE_NAME", "").strip()
 
 
+from openai import OpenAI
+from langfuse.decorators import observe
+
+# Initialize OpenAI Client (Langfuse automatically wraps this if imported after)
+client = OpenAI()
+
+@observe(as_type="generation")
 def generate_persona_profile(interviewer_data):
     """
     Uses LLM to transform raw LinkedIn data into a structured Persona Profile.
@@ -40,23 +47,14 @@ def generate_persona_profile(interviewer_data):
     user_msg = f"Raw LinkedIn Data: {json.dumps(interviewer_data)}"
 
     try:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {openai_api_key}"
-        }
-        payload = {
-            "model": "gpt-4o",
-            "messages": [
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg}
             ]
-        }
-        
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        return data['choices'][0]['message']['content']
+        )
+        return response.choices[0].message.content
 
     except Exception as e:
         print(f"LLM Persona Generation Failed: {e}")

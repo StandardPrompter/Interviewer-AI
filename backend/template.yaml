@@ -9,10 +9,17 @@ Description: >
   - DynamoDB (Agent State)
 
 Parameters:
-  OpenAIAPIKey:
+  LangfuseSecretKey:
     Type: String
-    Description: "OpenAI API Key for Realtime API"
+    Description: "Langfuse Secret Key"
     NoEcho: true
+  LangfusePublicKey:
+    Type: String
+    Description: "Langfuse Public Key"
+  LangfuseBaseUrl:
+    Type: String
+    Description: "Langfuse Base URL"
+    Default: "https://cloud.langfuse.com"
 
 Globals:
   Function:
@@ -23,6 +30,9 @@ Globals:
       Variables:
         TABLE_NAME: !Ref AgentStateTable
         OPENAI_API_KEY: !Ref OpenAIAPIKey
+        LANGFUSE_SECRET_KEY: !Ref LangfuseSecretKey
+        LANGFUSE_PUBLIC_KEY: !Ref LangfusePublicKey
+        LANGFUSE_HOST: !Ref LangfuseBaseUrl
 
 Resources:
   # Specialized DynamoDB Tables
@@ -59,6 +69,17 @@ Resources:
     Properties:
       BucketName: !Sub "${AWS::StackName}-transcripts-${AWS::AccountId}"
 
+  # Common Layer
+  CommonLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: CommonLayer
+      Description: Common dependencies for Interviewer functions
+      ContentUri: ./layers/common_layer/
+      CompatibleRuntimes:
+        - python3.11
+      RetentionPolicy: Retain
+
   # Research Workflow Lambdas
   InterviewerResearchFunction:
     Type: AWS::Serverless::Function
@@ -73,9 +94,9 @@ Resources:
           PERSONA_TABLE_NAME: !Ref PersonaStorageTable
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref LinkedInResearchTable
+          TableName: !Ref LinkedInResearchTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PersonaStorageTable
+          TableName: !Ref PersonaStorageTable
       Layers:
         - !Ref CommonLayer
     Metadata:
@@ -96,9 +117,9 @@ Resources:
           PERSONA_TABLE_NAME: !Ref PersonaStorageTable
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref CompanyResearchTable
+          TableName: !Ref CompanyResearchTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref PersonaStorageTable
+          TableName: !Ref PersonaStorageTable
       Layers:
         - !Ref CommonLayer
     Metadata:
@@ -120,11 +141,11 @@ Resources:
           LINKEDIN_TABLE_NAME: !Ref LinkedInResearchTable
       Policies:
         - DynamoDBCrudPolicy:
-            TableName: !Ref PersonaStorageTable
+          TableName: !Ref PersonaStorageTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref CompanyResearchTable
+          TableName: !Ref CompanyResearchTable
         - DynamoDBCrudPolicy:
-            TableName: !Ref LinkedInResearchTable
+          TableName: !Ref LinkedInResearchTable
       Layers:
         - !Ref CommonLayer
     Metadata:
