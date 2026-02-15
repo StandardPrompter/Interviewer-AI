@@ -767,10 +767,7 @@ export default function InterviewPage() {
             {stage === 'interview' && !isLoadingSession && (
                 <GazeTracker
                     isActive={stage === 'interview'}
-                    skipCalibration={true}
-                    onCalibrationComplete={() => {
-                        setStage('interview');
-                    }}
+
                     onGazeViolation={handleGazeViolation}
                     videoRef={userVideoRef}
                 />

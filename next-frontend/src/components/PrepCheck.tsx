@@ -235,7 +235,7 @@ export default function PrepCheck({ onComplete, isResearching, researchProgress 
                             >
                                 {allChecksPassed ? (
                                     <>
-                                        Start Calibration <ArrowRight className="w-5 h-5" />
+                                        Start Interview <ArrowRight className="w-5 h-5" />
                                     </>
                                 ) : (
                                     <span className="flex items-center gap-2">

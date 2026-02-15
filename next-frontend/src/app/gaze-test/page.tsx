@@ -130,7 +130,7 @@ export default function GazeTestPage() {
             {cameraReady && (
                 <GazeTracker
                     isActive={true}
-                    skipCalibration={true}
+
                     onGazeViolation={handleGazeViolation}
                     videoRef={videoRef}
                 />

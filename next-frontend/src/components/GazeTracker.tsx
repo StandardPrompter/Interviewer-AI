@@ -6,9 +6,7 @@ import { FaceLandmarker, FilesetResolver, FaceLandmarkerResult } from '@mediapip
 
 interface GazeTrackerProps {
     onGazeViolation?: () => void;
-    onCalibrationComplete?: () => void;
     isActive: boolean;
-    skipCalibration?: boolean;
     videoRef?: React.RefObject<HTMLVideoElement | null>;
 }
 
@@ -55,9 +53,7 @@ function calculateHeadPose(landmarks: { x: number; y: number; z: number }[]) {
 
 export default function GazeTracker({
     onGazeViolation,
-    onCalibrationComplete,
     isActive,
-    skipCalibration = false,
     videoRef
 }: GazeTrackerProps) {
     // Use refs for all mutable state to avoid stale closure issues
@@ -80,12 +76,7 @@ export default function GazeTracker({
         onGazeViolationRef.current = onGazeViolation;
     }, [onGazeViolation]);
 
-    // Signal calibration complete immediately since we don't need calibration
-    useEffect(() => {
-        if (skipCalibration && onCalibrationComplete) {
-            onCalibrationComplete();
-        }
-    }, [skipCalibration, onCalibrationComplete]);
+
 
     const updateStatusUI = useCallback((status: 'safe' | 'warning') => {
         if (gazeStatusRef.current === status) return;
