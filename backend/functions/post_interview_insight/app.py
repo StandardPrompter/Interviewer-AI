@@ -12,7 +12,7 @@ api_key = os.environ.get("OPENAI_API_KEY")
 transcript_bucket = os.environ.get("TRANSCRIPT_BUCKET_NAME")
 persona_table_name = os.environ.get("PERSONA_TABLE_NAME")
 
-from openai import OpenAI
+from langfuse.openai import OpenAI
 from langfuse.decorators import observe
 
 # Initialize OpenAI Client

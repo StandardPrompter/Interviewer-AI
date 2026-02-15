@@ -13,7 +13,7 @@ openai_api_key = os.environ.get("OPENAI_API_KEY")
 interviewer_table_name = os.environ.get("LINKEDIN_TABLE_NAME", "").strip()
 
 
-from openai import OpenAI
+from langfuse.openai import OpenAI
 from langfuse.decorators import observe
 
 # Initialize OpenAI Client (Langfuse automatically wraps this if imported after)

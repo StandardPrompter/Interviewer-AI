@@ -13,6 +13,9 @@ api_key = os.environ.get("PARALLEL_AI_API_KEY")
 table_name = os.environ.get("COMPANY_TABLE_NAME", "").strip() 
 persona_table_name = os.environ.get("PERSONA_TABLE_NAME", "").strip()
 
+from langfuse.decorators import observe
+
+@observe()
 def lambda_handler(event, context):
     """
     Handler for Company Research.

@@ -13,6 +13,9 @@ linkedin_table_name = os.environ.get("LINKEDIN_TABLE_NAME", "").strip()
 
 
 
+from langfuse.decorators import observe
+
+@observe()
 def lambda_handler(event, context):
     """
     Persona Generator Lambda
