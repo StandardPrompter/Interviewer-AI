@@ -11,16 +11,6 @@ dynamodb = boto3.resource('dynamodb')
 # Initialize Bedrock Client
 client = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
 
-<<<<<<< HEAD
-from langfuse.openai import OpenAI
-from langfuse.decorators import observe
-
-# Initialize OpenAI Client
-client = OpenAI()
-
-@observe()
-=======
->>>>>>> f45901d (feat: implement real-time interview interface with gaze tracking and Sonic audio integration)
 def lambda_handler(event, context):
     """
     Handler for Post Interview Insight.

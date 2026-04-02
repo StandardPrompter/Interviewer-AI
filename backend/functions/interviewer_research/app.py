@@ -12,14 +12,9 @@ api_key = os.environ.get("SCRAPINGDOG_API_KEY")
 interviewer_table_name = os.environ.get("LINKEDIN_TABLE_NAME", "").strip()
 
 
-<<<<<<< HEAD
-from langfuse.openai import OpenAI
-from langfuse.decorators import observe
-=======
 # Initialize Bedrock Client
 # The SDK should pick up AWS_BEARER_TOKEN_BEDROCK if it's set in the environment
 client = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
->>>>>>> f45901d (feat: implement real-time interview interface with gaze tracking and Sonic audio integration)
 
 def generate_persona_profile(interviewer_data):
     """
