@@ -7,12 +7,12 @@ from unittest.mock import MagicMock
 # 1. Setup Environment Variables
 os.environ["CACHE_TABLE_NAME"] = "TestCacheTable"
 os.environ["TABLE_NAME"] = "AgentStateTable"
-os.environ["OPENAI_API_KEY"] = "sk-test"
 os.environ["LINKEDIN_TABLE_NAME"] = "LinkedInTable"
 os.environ["COMPANY_TABLE_NAME"] = "CompanyTable"
 os.environ["PERSONA_TABLE_NAME"] = "PersonaTable"
 os.environ["SCRAPINGDOG_API_KEY"] = "test-key"
 os.environ["PARALLEL_AI_API_KEY"] = "pk"
+os.environ["AWS_BEARER_TOKEN_BEDROCK"] = "test-token"
 
 # 2. Add functions to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../functions'))
@@ -43,16 +43,16 @@ mock_types = MagicMock()
 sys.modules["parallel.types"] = mock_types
 sys.modules["parallel.types.beta"] = mock_types
 
-mock_openai = MagicMock()
-mock_completion = MagicMock()
-mock_completion.choices = [MagicMock(message=MagicMock(content="AI Generated Persona Content"))]
-sys.modules["openai"] = mock_openai
-
-mock_langfuse = MagicMock()
-mock_decorators = MagicMock()
-mock_decorators.observe.return_value = lambda x=None, **kwargs: (lambda func: func)
-sys.modules["langfuse"] = mock_langfuse
-sys.modules["langfuse.decorators"] = mock_decorators
+mock_bedrock = MagicMock()
+mock_bedrock_response = {
+    "output": {
+        "message": {
+            "content": [{"text": "AI Generated Persona Content"}]
+        }
+    }
+}
+mock_boto3.client.return_value = mock_bedrock
+mock_bedrock.converse.return_value = mock_bedrock_response
 
 mock_requests = MagicMock()
 mock_response = MagicMock()
@@ -70,8 +70,7 @@ sys.modules["requests"] = mock_requests
 # 4. Import Handlers
 try:
     from interviewer_research import app as interviewer_research
-    interviewer_research.client = MagicMock()
-    interviewer_research.client.chat.completions.create.return_value = mock_completion
+    # Client is already mocked via boto3.client
     
     from company_research import app as company_research
     
