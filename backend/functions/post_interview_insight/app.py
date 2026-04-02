@@ -8,10 +8,10 @@ import time
 s3 = boto3.client('s3')
 dynamodb = boto3.resource('dynamodb')
 
-api_key = os.environ.get("OPENAI_API_KEY")
-transcript_bucket = os.environ.get("TRANSCRIPT_BUCKET_NAME")
-persona_table_name = os.environ.get("PERSONA_TABLE_NAME")
+# Initialize Bedrock Client
+client = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
 
+<<<<<<< HEAD
 from langfuse.openai import OpenAI
 from langfuse.decorators import observe
 
@@ -19,18 +19,22 @@ from langfuse.decorators import observe
 client = OpenAI()
 
 @observe()
+=======
+>>>>>>> f45901d (feat: implement real-time interview interface with gaze tracking and Sonic audio integration)
 def lambda_handler(event, context):
     """
     Handler for Post Interview Insight.
     Triggered by S3 event when transcript is uploaded.
-    Retrieves transcript from S3, analyzes it using OpenAI, and saves insights to DynamoDB.
+    Retrieves transcript from S3, analyzes it using Nova Pro, and saves insights to DynamoDB.
     """
     print(f"Received event: {json.dumps(event)}")
     
-    if not all([api_key, transcript_bucket, persona_table_name]):
+    # Check for Bearer Token and other config
+    bearer_token = os.environ.get("AWS_BEARER_TOKEN_BEDROCK")
+    if not all([bearer_token, transcript_bucket, persona_table_name]):
         return {
             "statusCode": 500,
-            "body": json.dumps({"error": "Configuration missing: OPENAI_API_KEY, TRANSCRIPT_BUCKET_NAME, or PERSONA_TABLE_NAME"})
+            "body": json.dumps({"error": "Configuration missing: AWS_BEARER_TOKEN_BEDROCK, TRANSCRIPT_BUCKET_NAME, or PERSONA_TABLE_NAME"})
         }
     
     # 1. Extract session_id from S3 event
@@ -38,17 +42,13 @@ def lambda_handler(event, context):
     
     # Handle S3 event structure
     if isinstance(event, dict):
-        # Check if this is an S3 event
         if "Records" in event and len(event["Records"]) > 0:
             record = event["Records"][0]
             if "s3" in record and "object" in record["s3"]:
-                # Extract key from S3 event: transcripts/{session_id}.json
                 s3_key = record["s3"]["object"]["key"]
-                # Extract session_id from key
                 if s3_key.startswith("transcripts/") and s3_key.endswith(".json"):
                     session_id = s3_key.replace("transcripts/", "").replace(".json", "")
                     print(f"Extracted session_id from S3 key: {session_id}")
-        # Fallback: check for direct session_id (for manual invocation)
         elif "session_id" in event:
             session_id = event.get("session_id")
     
@@ -63,11 +63,9 @@ def lambda_handler(event, context):
         transcript_key = f"transcripts/{session_id}.json"
         print(f"Fetching transcript from S3: {transcript_bucket}/{transcript_key}")
         
-        response = s3.get_object(Bucket=transcript_bucket, Key=transcript_key)
-        transcript_data = json.loads(response['Body'].read().decode('utf-8'))
+        response_s3 = s3.get_object(Bucket=transcript_bucket, Key=transcript_key)
+        transcript_data = json.loads(response_s3['Body'].read().decode('utf-8'))
         
-        # Assume transcript_data is a list of messages or a large string
-        # format it for the prompt
         transcript_text = ""
         if isinstance(transcript_data, list):
             for msg in transcript_data:
@@ -77,34 +75,44 @@ def lambda_handler(event, context):
         else:
             transcript_text = str(transcript_data)
 
-        # 3. Use OpenAI to get insights
-        print(f"Generating insights for session {session_id} using OpenAI...")
+        # 3. Use Bedrock Nova to get insights
+        print(f"Generating insights for session {session_id} using Nova Pro...")
         
         system_prompt = """
         You are an expert Interview Coach and AI Analyst. You will be provided with a transcript of a job interview.
         Your goal is to provide deep insights and feedback to the candidate.
         
-        Please provide:
-        1. **Summary**: A concise summary of how the interview went.
-        2. **Strengths**: 3-5 key strengths the candidate demonstrated.
-        3. **Weaknesses**: 3-5 areas for improvement with specific examples.
-        4. **Score**: An overall score out of 10 for the performance.
-        5. **Next Steps**: actionable advice for the next interview.
+        IMPORTANT: Your entire response must be a single, valid JSON object with ONLY these keys: summary, strengths, weaknesses, score, next_steps.
+        Do not include any other text BEFORE or AFTER the JSON.
         
-        Format your response as a structured JSON object with these keys: summary, strengths, weaknesses, score, next_steps.
+        Structure:
+        1. summary: A concise summary of the performance.
+        2. strengths: A list of 3-5 key strengths.
+        3. weaknesses: A list of 3-5 areas for improvement with examples.
+        4. score: A numeric overall score out of 10.
+        5. next_steps: Actionable advice.
         """
         
         user_prompt = f"Transcript:\n{transcript_text}"
         
-        completion = client.chat.completions.create(
-            model="gpt-4o",
+        response = client.converse(
+            modelId="amazon.nova-pro-v1:0",
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": f"System Identity: {system_prompt}\n\nTask:\n{user_prompt}"}
+                    ]
+                }
             ],
-            response_format={ "type": "json_object" }
+            inferenceConfig={"temperature": 0.7}
         )
-        insights = json.loads(completion.choices[0].message.content)
+        
+        raw_insights = response["output"]["message"]["content"][0]["text"]
+        
+        # Bedrock might return markdown-wrapped JSON, let's clean it just in case
+        clean_json = re.sub(r'^```json\n|\n```$', '', raw_insights.strip())
+        insights = json.loads(clean_json)
         
         # 4. Save insights to DynamoDB
         print(f"Saving insights to DynamoDB table {persona_table_name}...")
@@ -119,7 +127,6 @@ def lambda_handler(event, context):
             }
         )
 
-        
         return {
             "statusCode": 200,
             "body": json.dumps({
@@ -127,6 +134,21 @@ def lambda_handler(event, context):
                 "session_id": session_id,
                 "insights": insights
             })
+        }
+
+    except s3.exceptions.NoSuchKey:
+        print(f"Transcript not found for session {session_id}")
+        return {
+            "statusCode": 404,
+            "body": json.dumps({"error": f"Transcript for session {session_id} not found in S3"})
+        }
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": str(e)})
         }
 
     except s3.exceptions.NoSuchKey:

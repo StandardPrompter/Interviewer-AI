@@ -8,18 +8,19 @@ import json
 # Configuration
 dynamodb = boto3.resource("dynamodb")
 api_key = os.environ.get("SCRAPINGDOG_API_KEY")
-openai_api_key = os.environ.get("OPENAI_API_KEY")
 
 interviewer_table_name = os.environ.get("LINKEDIN_TABLE_NAME", "").strip()
 
 
+<<<<<<< HEAD
 from langfuse.openai import OpenAI
 from langfuse.decorators import observe
+=======
+# Initialize Bedrock Client
+# The SDK should pick up AWS_BEARER_TOKEN_BEDROCK if it's set in the environment
+client = boto3.client(service_name="bedrock-runtime", region_name="us-east-1")
+>>>>>>> f45901d (feat: implement real-time interview interface with gaze tracking and Sonic audio integration)
 
-# Initialize OpenAI Client (Langfuse automatically wraps this if imported after)
-client = OpenAI()
-
-@observe(as_type="generation")
 def generate_persona_profile(interviewer_data):
     """
     Uses LLM to transform raw LinkedIn data into a structured Persona Profile.
@@ -47,14 +48,19 @@ def generate_persona_profile(interviewer_data):
     user_msg = f"Raw LinkedIn Data: {json.dumps(interviewer_data)}"
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
+        response = client.converse(
+            modelId="amazon.nova-pro-v1:0",
             messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg}
-            ]
+                {
+                    "role": "user",
+                    "content": [
+                        {"text": f"System Identity: {system_msg}\n\nTask:\n{user_msg}"}
+                    ]
+                }
+            ],
+            inferenceConfig={"temperature": 0.7}
         )
-        return response.choices[0].message.content
+        return response["output"]["message"]["content"][0]["text"]
 
     except Exception as e:
         print(f"LLM Persona Generation Failed: {e}")

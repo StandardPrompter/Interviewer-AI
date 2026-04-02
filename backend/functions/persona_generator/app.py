@@ -6,7 +6,6 @@ import time
 
 # Configuration
 dynamodb = boto3.resource('dynamodb')
-api_key = os.environ.get("OPENAI_API_KEY")
 persona_table_name = os.environ.get("PERSONA_TABLE_NAME", "").strip()
 company_table_name = os.environ.get("COMPANY_TABLE_NAME", "").strip()
 linkedin_table_name = os.environ.get("LINKEDIN_TABLE_NAME", "").strip()

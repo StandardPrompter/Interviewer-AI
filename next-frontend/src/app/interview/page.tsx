@@ -43,7 +43,6 @@ export default function InterviewPage() {
 
     // Session State
     const [isConnected, setIsConnected] = useState(false);
-    const [isConnecting, setIsConnecting] = useState(false);
     const [hasStarted, setHasStarted] = useState(false);
     const [isMicActive, setIsMicActive] = useState(true);
     const [isPaused, setIsPaused] = useState(false);
@@ -52,11 +51,13 @@ export default function InterviewPage() {
     const TOTAL_TIME = 20 * 60; // 20 minutes
     const [timeLeft, setTimeLeft] = useState(TOTAL_TIME);
 
-    const pcRef = useRef<RTCPeerConnection | null>(null);
-    const dcRef = useRef<RTCDataChannel | null>(null);
-    const audioRef = useRef<HTMLAudioElement | null>(null);
+    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const userVideoRef = useRef<HTMLVideoElement | null>(null);
+    const isProcessingRef = useRef(false);
+    const audioChunksRef = useRef<Blob[]>([]);
 
     // Proctoring State
     // Initial stage is interview because calibration is handled in /preparation
@@ -90,9 +91,8 @@ export default function InterviewPage() {
         setAiStatus('speaking'); // Or 'silent'
 
         // Stop all sessions immediately
-        if (pcRef.current) pcRef.current.close();
+        if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
         if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-        if (dcRef.current) dcRef.current.close();
         setIsConnected(false);
         setIsMicActive(false);
 
@@ -117,52 +117,98 @@ export default function InterviewPage() {
         });
     }, [stage, handleMalpracticeTermination]);
 
+    const sendAudioToSonic = useCallback(async (audioBlob: Blob) => {
+        if (isProcessingRef.current) return;
+        isProcessingRef.current = true;
+        setAiStatus('thinking');
 
+        try {
+            const formData = new FormData();
+            formData.append('audio', audioBlob);
+            formData.append('session_id', sessionId);
+            formData.append('instructions', "You are a professional technical interviewer. Conduct a natural, conversational interview.");
+
+            const response = await fetch('/api/sonic', {
+                method: 'POST',
+                body: formData,
+            });
+
+            if (!response.ok) throw new Error('Failed to send audio to Sonic');
+            if (!response.body) throw new Error('No response body from Sonic');
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let accumulatedText = '';
+
+            const playAudioFromBase64 = async (base64: string) => {
+                const binaryString = window.atob(base64);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+                
+                if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
+                const source = audioContextRef.current.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContextRef.current.destination);
+                source.start();
+                setAiStatus('speaking');
+                
+                return new Promise((resolve) => {
+                    source.onended = resolve;
+                });
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                const chunk = decoder.decode(value, { stream: true });
+                const lines = chunk.split('\n').filter(l => l.trim());
+
+                for (const line of lines) {
+                    try {
+                        const event = JSON.parse(line);
+                        if (event.type === 'text') {
+                            accumulatedText += event.data;
+                            setCurrentAssistantMessage({
+                                content: accumulatedText,
+                                timestamp: new Date().toISOString()
+                            });
+                        } else if (event.type === 'audio') {
+                            await playAudioFromBase64(event.data);
+                        } else if (event.type === 'message_stop') {
+                            setTranscriptMessages(prev => [...prev, {
+                                id: crypto.randomUUID(),
+                                role: 'assistant',
+                                content: accumulatedText,
+                                timestamp: new Date().toISOString()
+                            }]);
+                            setCurrentAssistantMessage(null);
+                            setAiStatus('listening');
+                        }
+                    } catch (e) {
+                        console.error('Error parsing sonic event:', e, line);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error in Sonic interaction:', error);
+        } finally {
+            isProcessingRef.current = false;
+        }
+    }, [sessionId]);
 
     const startInterview = useCallback(() => {
-        console.log('🎯 startInterview called. stage:', stage, 'dcRef:', dcRef.current?.readyState);
-        // Only start if we are in interview stage (after calibration)
-        if (stage !== 'interview') {
-            console.log('❌ Not in interview stage, returning');
-            return;
-        }
-        if (!dcRef.current || dcRef.current.readyState !== 'open') {
-            console.log('❌ Data channel not open, returning. readyState:', dcRef.current?.readyState);
-            return;
-        }
-        console.log('✅ Starting interview...');
-        setHasStarted((prevHasStarted: boolean) => {
-            if (prevHasStarted) return true;
+        console.log('🎯 startInterview called. stage:', stage);
+        if (stage !== 'interview') return;
+        
+        setIsConnected(true);
+        setHasStarted(true);
+        setAiStatus('listening');
 
-            const initialMessage = `Hello! I'm ready to begin the interview. Please introduce yourself and start with the first question.`;
-
-            // Add initial message to transcript
-            setTranscriptMessages((prev) => [...prev, {
-                id: crypto.randomUUID(),
-                role: 'user',
-                content: initialMessage,
-                timestamp: new Date().toISOString()
-            }]);
-
-            const event = {
-                type: "conversation.item.create",
-                item: {
-                    type: "message",
-                    role: "user",
-                    content: [{
-                        type: "input_text",
-                        text: initialMessage
-                    }],
-                },
-            };
-            dcRef.current?.send(JSON.stringify(event));
-            dcRef.current?.send(JSON.stringify({
-                type: "response.create"
-            }));
-
-            setAiStatus('speaking');
-            return true;
-        });
+        // Initial greeting handled by first user interaction or automatic
     }, [stage]);
 
     const togglePause = useCallback(() => {
@@ -176,61 +222,9 @@ export default function InterviewPage() {
     }, []);
 
     const initRealtime = useCallback(async () => {
-        if (isConnecting || isConnected) return;
+        if (isConnected) return;
 
         try {
-            setIsConnecting(true);
-
-            const tokenResponse = await fetch('/api/session', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ session_id: sessionId })
-            });
-
-            if (!tokenResponse.ok) throw new Error("Failed to get session token");
-
-            const data = await tokenResponse.json();
-            console.log('📋 Full session response:', JSON.stringify(data, null, 2));
-            console.log('📋 Session model:', data.model);
-            console.log('📋 Session expires at:', data.expires_at);
-            console.log('📋 Client secret expires at:', data.client_secret?.expires_at);
-            const EPHEMERAL_KEY = data.client_secret.value;
-
-            const pc = new RTCPeerConnection({
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' }
-                ]
-            });
-            pcRef.current = pc;
-
-            // Monitor ICE and connection state changes
-            pc.onconnectionstatechange = () => {
-                console.log('🔌 PC connectionState:', pc.connectionState);
-            };
-            pc.oniceconnectionstatechange = () => {
-                console.log('🧊 PC iceConnectionState:', pc.iceConnectionState);
-                if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-                    console.error('❌ ICE connection failed/disconnected');
-                }
-            };
-            pc.onicegatheringstatechange = () => {
-                console.log('🧊 PC iceGatheringState:', pc.iceGatheringState);
-            };
-
-            // Connect audio stream to existing audio element
-            pc.ontrack = (e) => {
-                console.log('🎧 Received remote track:', e.track.kind);
-                if (audioRef.current) {
-                    audioRef.current.srcObject = e.streams[0];
-                    // Explicitly try to play
-                    audioRef.current.play().catch(e => console.error("❌ Auto-play failed:", e));
-                    console.log('✅ Audio stream attached to player');
-                } else {
-                    console.error('❌ Audio ref not found');
-                }
-            };
-
             const ms = await navigator.mediaDevices.getUserMedia({
                 audio: true,
                 video: true
@@ -241,258 +235,72 @@ export default function InterviewPage() {
                 userVideoRef.current.srcObject = ms;
             }
 
-            const audioTrack = ms.getAudioTracks()[0];
-            if (audioTrack) {
-                setIsMicActive(true);
-                pc.addTrack(audioTrack, ms);
-            }
+            // Setup MediaRecorder for VAD
+            const mediaRecorder = new MediaRecorder(ms, { mimeType: 'audio/webm' });
+            mediaRecorderRef.current = mediaRecorder;
 
-            const dc = pc.createDataChannel("oai-events");
-            dcRef.current = dc;
-
-            dc.addEventListener("message", async (e) => {
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const event = JSON.parse(e.data) as any;
-                console.log('📨 Received event:', event.type, event);
-
-                // Handle assistant response start
-                if (event.type === 'response.created') {
-                    console.log('🤖 AI response started');
-                    const newMessage = {
-                        content: '',
-                        timestamp: new Date().toISOString()
-                    };
-                    currentAssistantMessageRef.current = newMessage;
-                    setCurrentAssistantMessage(newMessage);
+            mediaRecorder.ondataavailable = (e) => {
+                if (e.data.size > 0) {
+                    audioChunksRef.current.push(e.data);
                 }
+            };
 
-                // Handle assistant audio transcript deltas (real-time transcription of AI speech)
-                // Support both old and new event names for compatibility
-                if (event.type === 'response.audio_transcript.delta' || event.type === 'response.output_audio_transcript.delta') {
-                    const textDelta = event.delta;
-                    console.log('📝 AI audio transcript delta:', textDelta);
-                    if (textDelta && currentAssistantMessageRef.current) {
-                        currentAssistantMessageRef.current.content += textDelta;
-                        // Update UI state for real-time display
-                        setCurrentAssistantMessage(prev => prev ? {
-                            ...prev,
-                            content: prev.content + textDelta
-                        } : null);
+            mediaRecorder.onstop = async () => {
+                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
+                audioChunksRef.current = [];
+                await sendAudioToSonic(audioBlob);
+                // Restart recording if session still active
+                if (isConnected && !isPaused) {
+                    setTimeout(() => mediaRecorder.start(), 500);
+                }
+            };
+
+            // Simple VAD logic using Web Audio API
+            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+            audioContextRef.current = audioCtx;
+            const source = audioCtx.createMediaStreamSource(ms);
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 256;
+            source.connect(analyser);
+
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            let silenceStart = Date.now();
+            let isSpeaking = false;
+
+            const checkVAD = () => {
+                if (!isConnected || isPaused) return;
+                analyser.getByteFrequencyData(dataArray);
+                const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
+
+                if (volume > 20) { // Threshold for speaking
+                    if (!isSpeaking) {
+                        console.log('🎤 Speech started');
+                        isSpeaking = true;
+                        if (mediaRecorder.state === 'inactive') mediaRecorder.start();
                     }
-                }
-
-                // Also support response.text.delta for text-only responses (fallback)
-                if (event.type === 'response.text.delta') {
-                    const textDelta = event.delta;
-                    console.log('📝 AI text delta:', textDelta);
-                    if (textDelta && currentAssistantMessageRef.current) {
-                        currentAssistantMessageRef.current.content += textDelta;
-                        // Update UI state for real-time display
-                        setCurrentAssistantMessage((prev: { content: string, timestamp: string } | null) => prev ? {
-                            ...prev,
-                            content: prev.content + textDelta
-                        } : null);
+                    silenceStart = Date.now();
+                } else {
+                    if (isSpeaking && Date.now() - silenceStart > 1500) { // 1.5s silence
+                        console.log('🔇 Speech stopped');
+                        isSpeaking = false;
+                        if (mediaRecorder.state === 'recording') mediaRecorder.stop();
                     }
                 }
+                requestAnimationFrame(checkVAD);
+            };
+            checkVAD();
 
-                // Handle assistant response completion
-                if (event.type === 'response.done') {
-                    console.log('✅ AI response completed');
-
-                    // First try to use the accumulated text from deltas
-                    if (currentAssistantMessageRef.current && currentAssistantMessageRef.current.content.trim()) {
-                        const finalContent = currentAssistantMessageRef.current.content.trim();
-                        const timestamp = currentAssistantMessageRef.current.timestamp;
-
-                        setTranscriptMessages(prev => [...prev, {
-                            id: crypto.randomUUID(),
-                            role: 'assistant',
-                            content: finalContent,
-                            timestamp: timestamp
-                        }]);
-                    }
-                    // Fallback: try to extract from response.output if deltas didn't work
-                    else if (event.response?.output) {
-                        const assistantContent = event.response.output
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                            .filter((o: any) => o.type === 'text')
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                            .map((o: any) => o.text || o.value)
-                            .join('');
-
-                        if (assistantContent && assistantContent.trim()) {
-                            setTranscriptMessages(prev => [...prev, {
-                                id: crypto.randomUUID(),
-                                role: 'assistant',
-                                content: assistantContent.trim(),
-                                timestamp: new Date().toISOString()
-                            }]);
-                        }
-                    }
-
-                    currentAssistantMessageRef.current = null;
-                    setCurrentAssistantMessage(null);
-                }
-
-                // Handle user input transcriptions
-                if (event.type === 'conversation.item.input_audio_transcription.completed') {
-                    const transcription = event.transcript;
-                    if (transcription && transcription.trim()) {
-                        setTranscriptMessages(prev => [...prev, {
-                            id: crypto.randomUUID(),
-                            role: 'user',
-                            content: transcription,
-                            timestamp: new Date().toISOString()
-                        }]);
-                        console.log('✓ User transcription:', transcription);
-                    }
-                }
-
-                // Handle failed transcriptions
-                if (event.type === 'conversation.item.input_audio_transcription.failed') {
-                    console.warn('⚠ Transcription failed:', event.error);
-                    setTranscriptionErrors(prev => [...prev, event.error?.message || 'Unknown transcription error']);
-                }
-
-                // Handle end_interview function call
-                if (event.type === 'response.function_call_arguments.done') {
-                    console.log('🔧 Function call completed:', event.name, event.arguments);
-                    if (event.name === 'end_interview') {
-                        try {
-                            const args = JSON.parse(event.arguments);
-                            console.log('🏁 end_interview called:', args);
-                            setInterviewDecision({
-                                decision: args.decision,
-                                confidence: args.confidence,
-                                reasoning: args.reasoning
-                            });
-
-                            // Send function call output to acknowledge
-                            const outputEvent = {
-                                type: "conversation.item.create",
-                                item: {
-                                    type: "function_call_output",
-                                    call_id: event.call_id,
-                                    output: JSON.stringify({ status: "acknowledged", message: "Interview ended successfully" })
-                                }
-                            };
-                            dcRef.current?.send(JSON.stringify(outputEvent));
-
-                            // Let AI give closing remarks then stop session
-                            setTimeout(() => {
-                                stopSession();
-                            }, 5000);
-                        } catch (e) {
-                            console.error('Failed to parse end_interview args:', e);
-                        }
-                    }
-                }
-
-                // Manage AI Status based on events
-                if (event.type === 'response.audio.delta') setAiStatus('speaking');
-                if (event.type === 'input_audio_buffer.speech_started') setAiStatus('listening');
-                if (event.type === 'response.done') setAiStatus('listening');
-                if (event.type === 'input_audio_buffer.speech_stopped') setAiStatus('thinking');
-                if (event.type === 'response.created') setAiStatus('thinking');
-            });
-
-            dc.addEventListener("open", () => {
-                console.log('🔗 Data channel opened! readyState:', dc.readyState);
-                setIsConnected(true);
-                setIsConnecting(false);
-
-                // Transcription is now configured at session creation in /api/session
-
-                // Start the interview immediately after connection
-                // Delay slightly to ensure session update is processed
-                setTimeout(() => {
-                    console.log('📢 Sending initial interview message... dc.readyState:', dc.readyState);
-                    if (dc.readyState !== 'open') {
-                        console.error('❌ Data channel not open, cannot send message');
-                        return;
-                    }
-
-                    const initialMessage = `Hello! I'm ready to begin the interview. Please introduce yourself and start with the first question.`;
-
-                    const event = {
-                        type: "conversation.item.create",
-                        item: {
-                            type: "message",
-                            role: "user",
-                            content: [{
-                                type: "input_text",
-                                text: initialMessage
-                            }],
-                        },
-                    };
-
-                    try {
-                        dc.send(JSON.stringify(event));
-                        dc.send(JSON.stringify({ type: "response.create" }));
-                        setHasStarted(true);
-                        setAiStatus('speaking');
-                        console.log('✅ Interview started via dc.open handler');
-                    } catch (e) {
-                        console.error('❌ Error sending interview message:', e);
-                    }
-                }, 500);
-            });
-
-            dc.addEventListener("close", () => {
-                console.log('🔴 Data channel closed!');
-                setIsConnected(false);
-            });
-
-            dc.addEventListener("error", (e) => {
-                console.error('❌ Data channel error:', e);
-            });
-
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-
-            console.log('📤 Sending SDP offer to OpenAI...');
-            console.log('📋 SDP Offer (first 500 chars):', offer.sdp?.substring(0, 500));
-            console.log('📋 Audio track info:', pc.getSenders().map(s => ({
-                track: s.track?.kind,
-                id: s.track?.id,
-                enabled: s.track?.enabled
-            })));
-
-            const sdpResponse = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview`, {
-                method: "POST",
-                body: offer.sdp,
-                headers: {
-                    Authorization: `Bearer ${EPHEMERAL_KEY}`,
-                    "Content-Type": "application/sdp",
-                },
-            });
-
-            console.log('📥 SDP response status:', sdpResponse.status, sdpResponse.statusText);
-            console.log('📥 SDP response headers:', Object.fromEntries(sdpResponse.headers.entries()));
-
-            if (!sdpResponse.ok) {
-                const errorText = await sdpResponse.text();
-                console.error('❌ SDP response error:', errorText);
-                setIsConnecting(false);
-                return;
-            }
-
-            const answerSdp = await sdpResponse.text();
-            console.log('✅ SDP answer received, length:', answerSdp.length);
-            console.log('📋 SDP Answer (first 500 chars):', answerSdp.substring(0, 500));
-            const answer: RTCSessionDescriptionInit = { type: "answer", sdp: answerSdp };
-            await pc.setRemoteDescription(answer);
-            console.log('✅ Remote description set, pc.connectionState:', pc.connectionState);
+            setIsConnected(true);
+            setHasStarted(true);
 
         } catch (err: unknown) {
-            setIsConnecting(false);
             console.error('Connection error:', err);
         }
-    }, [isConnected, isConnecting, sessionId]);
+    }, [isConnected, isPaused, sendAudioToSonic]);
 
     const stopSession = useCallback(async () => {
         // Close media streams first
-        if (pcRef.current) pcRef.current.close();
+        if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
         if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
         setIsConnected(false);
 
@@ -583,22 +391,17 @@ export default function InterviewPage() {
 
     const restartInterview = useCallback(async () => {
         // Close current connection
-        if (pcRef.current) {
-            pcRef.current.close();
-            pcRef.current = null;
+        if (mediaRecorderRef.current) {
+            mediaRecorderRef.current.stop();
+            mediaRecorderRef.current = null;
         }
         if (streamRef.current) {
             streamRef.current.getTracks().forEach(track => track.stop());
             streamRef.current = null;
         }
-        if (dcRef.current) {
-            dcRef.current.close();
-            dcRef.current = null;
-        }
 
         // Reset state
         setIsConnected(false);
-        setIsConnecting(false);
         setHasStarted(false);
         setIsPaused(false);
         setTranscriptMessages([]);
@@ -617,7 +420,7 @@ export default function InterviewPage() {
     useEffect(() => {
         if (sessionId && !isLoadingSession) initRealtime();
         return () => {
-            if (pcRef.current) pcRef.current.close();
+            if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
             if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -650,7 +453,7 @@ export default function InterviewPage() {
 
     // Stage change detection - fetch new prompt when stage changes
     useEffect(() => {
-        if (!isConnected || !dcRef.current || dcRef.current.readyState !== 'open') return;
+        if (!isConnected) return;
 
         const currentStage = getCurrentInterviewStage();
         const stageName = currentStage?.name.toLowerCase() || 'introduction';
@@ -681,17 +484,9 @@ export default function InterviewPage() {
                 const data = await response.json();
                 console.log(`✓ Received ${stageName} prompt, updating session...`);
 
-                // Send session.update to OpenAI with new instructions
-                const sessionUpdateEvent = {
-                    type: "session.update",
-                    session: {
-                        instructions: data.prompt,
-                        tools: data.tools,
-                    }
-                };
-
-                dcRef.current?.send(JSON.stringify(sessionUpdateEvent));
-                console.log(`✓ Session updated with ${stageName} instructions`);
+                // Nova Sonic handles prompt updates differently than OpenAI Data channel.
+                // We'll just update the instructions which will be used in the next speech turn.
+                // You might want to store this in a ref or state.
 
             } catch (error) {
                 console.error('Error fetching stage prompt:', error);
@@ -994,8 +789,6 @@ export default function InterviewPage() {
                 </div>
             </div>
 
-            {/* Hidden Audio Element */}
-            <audio ref={audioRef} autoPlay />
         </main>
     );
 }

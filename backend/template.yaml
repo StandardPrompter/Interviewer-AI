@@ -9,17 +9,6 @@ Description: >
   - DynamoDB (Agent State)
 
 Parameters:
-  LangfuseSecretKey:
-    Type: String
-    Description: "Langfuse Secret Key"
-    NoEcho: true
-  LangfusePublicKey:
-    Type: String
-    Description: "Langfuse Public Key"
-  LangfuseBaseUrl:
-    Type: String
-    Description: "Langfuse Base URL"
-    Default: "https://cloud.langfuse.com"
 
 Globals:
   Function:
@@ -30,9 +19,6 @@ Globals:
       Variables:
         TABLE_NAME: !Ref AgentStateTable
         OPENAI_API_KEY: !Ref OpenAIAPIKey
-        LANGFUSE_SECRET_KEY: !Ref LangfuseSecretKey
-        LANGFUSE_PUBLIC_KEY: !Ref LangfusePublicKey
-        LANGFUSE_HOST: !Ref LangfuseBaseUrl
 
 Resources:
   # Specialized DynamoDB Tables
