@@ -30,7 +30,9 @@ export async function POST(req: Request) {
                         {
                             audio: {
                                 format: "wav", // Bedrock Nova Sonic supports wav
-                                bytes: audioBytes
+                                source: {
+                                    bytes: audioBytes
+                                }
                             }
                         }
                     ],
@@ -65,9 +67,9 @@ export async function POST(req: Request) {
                     }
 
                     if (chunk.contentBlockStart) {
-                        const start = chunk.contentBlockStart.start;
+                        const start = chunk.contentBlockStart.start as any;
                         if (start?.audio) {
-                            // Audio start event
+                            // Audio start event (forward-compatible check)
                             controller.enqueue(JSON.stringify({ type: 'audio_start' }) + '\n');
                         }
                     }
