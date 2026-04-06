@@ -34,6 +34,7 @@ const REGION = process.env.AWS_BEDROCK_REGION || "us-east-1";
 function createBedrockClient(): BedrockRuntimeClient {
   const baseConfig = {
     region: REGION,
+    authSchemePreference: ["sigv4"],
     requestHandler: new NodeHttp2Handler({
       requestTimeout: 300_000,
       sessionTimeout: 300_000,
@@ -62,7 +63,7 @@ function createBedrockClient(): BedrockRuntimeClient {
   }
 
   if (bearerToken) {
-    throw new Error("Nova Sonic bidirectional streaming requires IAM credentials. Bedrock API keys are not supported for this operation.");
+    console.warn("Ignoring AWS_BEARER_TOKEN_BEDROCK for Nova Sonic stream; using SigV4 IAM auth.");
   }
 
   return new BedrockRuntimeClient(baseConfig);
