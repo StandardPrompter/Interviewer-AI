@@ -37,7 +37,15 @@ export interface SessionState {
   closed: boolean;
 }
 
-const sessions = new Map<string, SessionState>();
+type SonicGlobal = typeof globalThis & {
+  __sonicSessions?: Map<string, SessionState>;
+};
+
+const sonicGlobal = globalThis as SonicGlobal;
+const sessions = sonicGlobal.__sonicSessions ?? new Map<string, SessionState>();
+if (!sonicGlobal.__sonicSessions) {
+  sonicGlobal.__sonicSessions = sessions;
+}
 
 export function getSession(sessionId: string): SessionState | undefined {
   return sessions.get(sessionId);

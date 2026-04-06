@@ -27,23 +27,43 @@ import {
 } from "@/lib/sonic-session";
 
 const MODEL_ID = "amazon.nova-2-sonic-v1:0";
-const REGION = process.env.AWS_REGION || "us-east-1";
+const REGION = process.env.AWS_BEDROCK_REGION || "us-east-1";
 
 function createBedrockClient(): BedrockRuntimeClient {
-  return new BedrockRuntimeClient({
+  const baseConfig = {
     region: REGION,
-    credentials: {
-      accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-      ...(process.env.AWS_SESSION_TOKEN && {
-        sessionToken: process.env.AWS_SESSION_TOKEN,
-      }),
-    },
     requestHandler: new NodeHttp2Handler({
       requestTimeout: 300_000,
       sessionTimeout: 300_000,
     }),
-  });
+  };
+
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID?.trim();
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY?.trim();
+  const sessionToken = process.env.AWS_SESSION_TOKEN?.trim();
+  const bearerToken = process.env.AWS_BEARER_TOKEN_BEDROCK?.trim();
+
+  if (accessKeyId && secretAccessKey) {
+    const isTemporaryAccessKey = accessKeyId.startsWith("ASIA");
+    if (isTemporaryAccessKey && !sessionToken) {
+      throw new Error("AWS_SESSION_TOKEN is required when using temporary AWS credentials (ASIA access key).");
+    }
+
+    return new BedrockRuntimeClient({
+      ...baseConfig,
+      credentials: {
+        accessKeyId,
+        secretAccessKey,
+        ...(isTemporaryAccessKey && sessionToken && { sessionToken }),
+      },
+    });
+  }
+
+  if (bearerToken) {
+    throw new Error("Nova Sonic bidirectional streaming requires IAM credentials. Bedrock API keys are not supported for this operation.");
+  }
+
+  return new BedrockRuntimeClient(baseConfig);
 }
 
 // ── POST /api/sonic ──────────────────────────────────────────────────────────
@@ -55,7 +75,13 @@ export async function POST(req: NextRequest) {
     "You are a professional technical interviewer. Ask one clear question at a time and listen carefully to the candidate.";
   const sessionId: string = body.sessionId ?? randomUUID();
 
-  const bedrockClient = createBedrockClient();
+  let bedrockClient: BedrockRuntimeClient;
+  try {
+    bedrockClient = createBedrockClient();
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : "Invalid AWS configuration for Nova Sonic.";
+    return NextResponse.json({ error: message }, { status: 400 });
+  }
   const promptName = randomUUID();
   const systemContentName = randomUUID();
   const audioContentName = randomUUID();

@@ -173,6 +173,9 @@ export default function InterviewPage() {
         sseAbortRef.current?.abort();
         const abort = new AbortController();
         sseAbortRef.current = abort;
+        // Allow mic chunks to start flowing immediately while the SSE handshake is in progress.
+        sonicSessionIdRef.current = sid;
+        isStreamingRef.current = true;
 
         try {
             const response = await fetch('/api/sonic', {
@@ -184,11 +187,10 @@ export default function InterviewPage() {
 
             if (!response.ok) {
                 console.error('SSE open failed:', response.status);
+                sonicSessionIdRef.current = '';
+                isStreamingRef.current = false;
                 return;
             }
-
-            sonicSessionIdRef.current = sid;
-            isStreamingRef.current = true;
 
             // Start session renewal timer
             if (sessionRenewTimerRef.current) clearTimeout(sessionRenewTimerRef.current);
@@ -308,6 +310,8 @@ export default function InterviewPage() {
             if ((err as Error).name !== 'AbortError') {
                 console.error('SSE stream error:', err);
             }
+            sonicSessionIdRef.current = '';
+            isStreamingRef.current = false;
         } finally {
             isStreamingRef.current = false;
         }
