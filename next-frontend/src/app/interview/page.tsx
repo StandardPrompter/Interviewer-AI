@@ -6,39 +6,78 @@ import {
     MicOff,
     Play,
     Activity,
-    LogOut,
     RotateCcw,
     Pause,
     AlertTriangle,
-    MessageSquare,
-    MessageSquareOff
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import GazeTracker from '@/components/GazeTracker';
 
+// ── Audio constants ──────────────────────────────────────────────────────────
+
+const TARGET_SAMPLE_RATE = 16_000;
+const OUTPUT_SAMPLE_RATE = 24_000;
+const PROCESSOR_BUFFER_SIZE = 512;
+const SESSION_RENEW_MS = 7 * 60 * 1000; // Renew at 7 min (Nova Sonic max is 8 min)
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function float32ToInt16(float32: Float32Array): Int16Array {
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    return int16;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+function base64ToInt16Array(base64: string): Int16Array {
+    const raw = atob(base64);
+    const bytes = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) {
+        bytes[i] = raw.charCodeAt(i);
+    }
+    return new Int16Array(bytes.buffer);
+}
+
+function int16ToFloat32(int16: Int16Array): Float32Array {
+    const float32 = new Float32Array(int16.length);
+    for (let i = 0; i < int16.length; i++) {
+        float32[i] = int16[i] / 0x8000;
+    }
+    return float32;
+}
+
+// ── Component ────────────────────────────────────────────────────────────────
+
 export default function InterviewPage() {
     const router = useRouter();
     const [sessionId, setSessionId] = useState('');
-    const [transcriptMessages, setTranscriptMessages] = useState<Array<{ role: string, content: string, timestamp: string, id?: string }>>([]);
-    const [transcriptionErrors, setTranscriptionErrors] = useState<string[]>([]);
-    const currentAssistantMessageRef = useRef<{ content: string, timestamp: string } | null>(null);
-    const [currentAssistantMessage, setCurrentAssistantMessage] = useState<{ content: string, timestamp: string } | null>(null);
+    const [transcriptMessages, setTranscriptMessages] = useState<Array<{ role: string; content: string; timestamp: string; id?: string }>>([]);
+    const currentAssistantMessageRef = useRef<{ content: string; timestamp: string } | null>(null);
+    const [currentAssistantMessage, setCurrentAssistantMessage] = useState<{ content: string; timestamp: string } | null>(null);
     const [isLoadingSession, setIsLoadingSession] = useState(true);
-    const [showTranscript, setShowTranscript] = useState(false); // Default to false as requested (optional)
+    const [showTranscript, setShowTranscript] = useState(false);
 
     useEffect(() => {
-        // Get session_id from localStorage or generate new one
         const storedSessionId = localStorage.getItem('session_id');
         if (storedSessionId) {
             setSessionId(storedSessionId);
-            setIsLoadingSession(false);
         } else {
-            // Generate new session ID if not found
             const newSessionId = crypto.randomUUID();
             setSessionId(newSessionId);
             localStorage.setItem('session_id', newSessionId);
-            setIsLoadingSession(false);
         }
+        setIsLoadingSession(false);
     }, []);
 
     // Session State
@@ -48,37 +87,38 @@ export default function InterviewPage() {
     const [isPaused, setIsPaused] = useState(false);
     const [isSavingTranscript, setIsSavingTranscript] = useState(false);
     const [aiStatus, setAiStatus] = useState<'listening' | 'thinking' | 'speaking'>('listening');
-    const TOTAL_TIME = 20 * 60; // 20 minutes
+    const TOTAL_TIME = 20 * 60;
     const [timeLeft, setTimeLeft] = useState(TOTAL_TIME);
 
-    const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-    const audioContextRef = useRef<AudioContext | null>(null);
-    const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null);
+    // Refs for audio pipeline
+    const captureContextRef = useRef<AudioContext | null>(null);
+    const playbackContextRef = useRef<AudioContext | null>(null);
+    const processorRef = useRef<ScriptProcessorNode | null>(null);
     const streamRef = useRef<MediaStream | null>(null);
     const userVideoRef = useRef<HTMLVideoElement | null>(null);
-    const isProcessingRef = useRef(false);
-    const audioChunksRef = useRef<Blob[]>([]);
+    const sseAbortRef = useRef<AbortController | null>(null);
+    const sessionRenewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const sonicSessionIdRef = useRef<string>('');
+    const stagePromptRef = useRef<string>('');
+    const isStreamingRef = useRef(false);
+
+    // Audio playback queue for smooth sequential playback
+    const audioQueueRef = useRef<Float32Array[]>([]);
+    const isPlayingRef = useRef(false);
 
     // Proctoring State
-    // Initial stage is interview because calibration is handled in /preparation
     const [stage, setStage] = useState<'interview' | 'terminated'>('interview');
     const [gazeViolations, setGazeViolations] = useState(0);
     const [showGazeWarning, setShowGazeWarning] = useState(false);
 
-    // Interview stage tracking for dynamic prompt switching
+    // Interview stage tracking
     const [currentInterviewStageName, setCurrentInterviewStageName] = useState<string>('introduction');
-    const [interviewDecision, setInterviewDecision] = useState<{
-        decision: string;
-        confidence: number;
-        reasoning: string;
-    } | null>(null);
 
-    // Agenda Stages logic
     const interviewStages = [
-        { name: 'Introduction', start: 0, end: 0.15 }, // 0-15%
-        { name: 'Technical', start: 0.15, end: 0.70 }, // 15-70%
-        { name: 'Behavioral', start: 0.70, end: 0.90 }, // 70-90%
-        { name: 'Conclusion', start: 0.90, end: 1.0 }, // 90-100%
+        { name: 'Introduction', start: 0, end: 0.15 },
+        { name: 'Technical', start: 0.15, end: 0.70 },
+        { name: 'Behavioral', start: 0.70, end: 0.90 },
+        { name: 'Conclusion', start: 0.90, end: 1.0 },
     ];
 
     const getCurrentInterviewStage = () => {
@@ -86,230 +126,345 @@ export default function InterviewPage() {
         return interviewStages.find(s => progress >= s.start && progress < s.end) || interviewStages[interviewStages.length - 1];
     };
 
-    const handleMalpracticeTermination = useCallback(async () => {
-        setStage('terminated');
-        setAiStatus('speaking'); // Or 'silent'
+    // ── Audio playback (raw PCM 24kHz) ───────────────────────────────────────
 
-        // Stop all sessions immediately
-        if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
-        if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-        setIsConnected(false);
-        setIsMicActive(false);
-
-        // Optional: Save a "terminated" record to server if needed
+    const ensurePlaybackContext = useCallback(() => {
+        if (!playbackContextRef.current || playbackContextRef.current.state === 'closed') {
+            playbackContextRef.current = new AudioContext({ sampleRate: OUTPUT_SAMPLE_RATE });
+        }
+        return playbackContextRef.current;
     }, []);
 
-    const handleGazeViolation = useCallback(() => {
-        if (stage !== 'interview') return;
+    const drainAudioQueue = useCallback(() => {
+        if (isPlayingRef.current) return;
+        const chunk = audioQueueRef.current.shift();
+        if (!chunk) return;
 
-        setGazeViolations((prev: number) => {
-            const newCount = prev + 1;
-            console.warn(`Gaze violation detected! Count: ${newCount}`);
+        isPlayingRef.current = true;
+        const ctx = ensurePlaybackContext();
+        const buffer = ctx.createBuffer(1, chunk.length, OUTPUT_SAMPLE_RATE);
+        buffer.getChannelData(0).set(chunk);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(ctx.destination);
+        source.onended = () => {
+            isPlayingRef.current = false;
+            drainAudioQueue();
+        };
+        source.start();
+    }, [ensurePlaybackContext]);
 
-            // Show warning UI
-            setShowGazeWarning(true);
-            setTimeout(() => setShowGazeWarning(false), 3000);
+    const queueAudioChunk = useCallback((base64: string) => {
+        const int16 = base64ToInt16Array(base64);
+        const float32 = int16ToFloat32(int16);
+        audioQueueRef.current.push(float32);
+        setAiStatus('speaking');
+        drainAudioQueue();
+    }, [drainAudioQueue]);
 
-            if (newCount > 5) {
-                handleMalpracticeTermination();
-            }
-            return newCount;
-        });
-    }, [stage, handleMalpracticeTermination]);
+    const flushAudioQueue = useCallback(() => {
+        audioQueueRef.current = [];
+        isPlayingRef.current = false;
+    }, []);
 
-    const sendAudioToSonic = useCallback(async (audioBlob: Blob) => {
-        if (isProcessingRef.current) return;
-        isProcessingRef.current = true;
-        setAiStatus('thinking');
+    // ── SSE reader ───────────────────────────────────────────────────────────
+
+    const startSSEStream = useCallback(async (sid: string, systemPrompt: string) => {
+        sseAbortRef.current?.abort();
+        const abort = new AbortController();
+        sseAbortRef.current = abort;
 
         try {
-            const formData = new FormData();
-            formData.append('audio', audioBlob);
-            formData.append('session_id', sessionId);
-            formData.append('instructions', "You are a professional technical interviewer. Conduct a natural, conversational interview.");
-
             const response = await fetch('/api/sonic', {
                 method: 'POST',
-                body: formData,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ systemPrompt, sessionId: sid }),
+                signal: abort.signal,
             });
 
-            if (!response.ok) throw new Error('Failed to send audio to Sonic');
-            if (!response.body) throw new Error('No response body from Sonic');
+            if (!response.ok) {
+                console.error('SSE open failed:', response.status);
+                return;
+            }
 
-            const reader = response.body.getReader();
+            sonicSessionIdRef.current = sid;
+            isStreamingRef.current = true;
+
+            // Start session renewal timer
+            if (sessionRenewTimerRef.current) clearTimeout(sessionRenewTimerRef.current);
+            sessionRenewTimerRef.current = setTimeout(() => {
+                renewSession();
+            }, SESSION_RENEW_MS);
+
+            const reader = response.body!.getReader();
             const decoder = new TextDecoder();
-            let accumulatedText = '';
-
-            const playAudioFromBase64 = async (base64: string) => {
-                const binaryString = window.atob(base64);
-                const bytes = new Uint8Array(binaryString.length);
-                for (let i = 0; i < binaryString.length; i++) {
-                    bytes[i] = binaryString.charCodeAt(i);
-                }
-                
-                if (!audioContextRef.current) audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
-                const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer);
-                const source = audioContextRef.current.createBufferSource();
-                source.buffer = audioBuffer;
-                source.connect(audioContextRef.current.destination);
-                source.start();
-                setAiStatus('speaking');
-                
-                return new Promise((resolve) => {
-                    source.onended = resolve;
-                });
-            };
+            let buffer = '';
+            let assistantText = '';
+            let userText = '';
+            let currentRole = '';
 
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n').filter(l => l.trim());
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() ?? '';
 
                 for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
                     try {
-                        const event = JSON.parse(line);
-                        if (event.type === 'text') {
-                            accumulatedText += event.data;
-                            setCurrentAssistantMessage({
-                                content: accumulatedText,
-                                timestamp: new Date().toISOString()
-                            });
-                        } else if (event.type === 'audio') {
-                            await playAudioFromBase64(event.data);
-                        } else if (event.type === 'message_stop') {
-                            setTranscriptMessages(prev => [...prev, {
-                                id: crypto.randomUUID(),
-                                role: 'assistant',
-                                content: accumulatedText,
-                                timestamp: new Date().toISOString()
-                            }]);
-                            setCurrentAssistantMessage(null);
-                            setAiStatus('listening');
+                        const event = JSON.parse(trimmed.slice(6));
+
+                        switch (event.type) {
+                            case 'contentStart': {
+                                currentRole = event.role ?? '';
+                                if (currentRole === 'ASSISTANT') {
+                                    assistantText = '';
+                                } else if (currentRole === 'USER') {
+                                    userText = '';
+                                }
+                                break;
+                            }
+                            case 'text': {
+                                const role = (event.role ?? '').toUpperCase();
+                                if (role === 'ASSISTANT') {
+                                    assistantText += event.content ?? '';
+                                    currentAssistantMessageRef.current = {
+                                        content: assistantText,
+                                        timestamp: new Date().toISOString(),
+                                    };
+                                    setCurrentAssistantMessage({ ...currentAssistantMessageRef.current });
+                                } else if (role === 'USER') {
+                                    userText += event.content ?? '';
+                                }
+                                break;
+                            }
+                            case 'audio': {
+                                if (event.content) {
+                                    queueAudioChunk(event.content);
+                                }
+                                break;
+                            }
+                            case 'contentEnd': {
+                                if (currentRole === 'ASSISTANT' && assistantText) {
+                                    setTranscriptMessages(prev => [...prev, {
+                                        id: crypto.randomUUID(),
+                                        role: 'assistant',
+                                        content: assistantText,
+                                        timestamp: new Date().toISOString(),
+                                    }]);
+                                    currentAssistantMessageRef.current = null;
+                                    setCurrentAssistantMessage(null);
+                                    assistantText = '';
+                                }
+                                if (currentRole === 'USER' && userText) {
+                                    setTranscriptMessages(prev => [...prev, {
+                                        id: crypto.randomUUID(),
+                                        role: 'user',
+                                        content: userText,
+                                        timestamp: new Date().toISOString(),
+                                    }]);
+                                    userText = '';
+                                }
+                                // If barge-in, flush playback
+                                if (event.stopReason === 'INTERRUPTED') {
+                                    flushAudioQueue();
+                                }
+                                setAiStatus('listening');
+                                currentRole = '';
+                                break;
+                            }
+                            case 'done': {
+                                // Finalize any remaining text
+                                if (assistantText) {
+                                    setTranscriptMessages(prev => [...prev, {
+                                        id: crypto.randomUUID(),
+                                        role: 'assistant',
+                                        content: assistantText,
+                                        timestamp: new Date().toISOString(),
+                                    }]);
+                                    currentAssistantMessageRef.current = null;
+                                    setCurrentAssistantMessage(null);
+                                }
+                                setAiStatus('listening');
+                                isStreamingRef.current = false;
+                                break;
+                            }
+                            case 'error': {
+                                console.error('Sonic SSE error:', event.message);
+                                isStreamingRef.current = false;
+                                break;
+                            }
                         }
-                    } catch (e) {
-                        console.error('Error parsing sonic event:', e, line);
+                    } catch (parseErr) {
+                        // Skip malformed lines
                     }
                 }
             }
-        } catch (error) {
-            console.error('Error in Sonic interaction:', error);
-        } finally {
-            isProcessingRef.current = false;
-        }
-    }, [sessionId]);
-
-    const startInterview = useCallback(() => {
-        console.log('🎯 startInterview called. stage:', stage);
-        if (stage !== 'interview') return;
-        
-        setIsConnected(true);
-        setHasStarted(true);
-        setAiStatus('listening');
-
-        // Initial greeting handled by first user interaction or automatic
-    }, [stage]);
-
-    const togglePause = useCallback(() => {
-        setIsPaused((prev: boolean) => {
-            const newState = !prev;
-            if (streamRef.current) {
-                streamRef.current.getAudioTracks().forEach(track => track.enabled = newState);
+        } catch (err: unknown) {
+            if ((err as Error).name !== 'AbortError') {
+                console.error('SSE stream error:', err);
             }
-            return newState;
-        });
+        } finally {
+            isStreamingRef.current = false;
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [queueAudioChunk, flushAudioQueue]);
+
+    // ── Audio capture (PCM 16kHz) ────────────────────────────────────────────
+
+    const sendAudioChunk = useCallback(async (base64: string) => {
+        if (!sonicSessionIdRef.current) return;
+        try {
+            await fetch('/api/sonic/audio', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: sonicSessionIdRef.current,
+                    audio: base64,
+                }),
+            });
+        } catch {
+            // Network errors are transient; audio will be lost but stream continues
+        }
     }, []);
+
+    const startAudioCapture = useCallback(async () => {
+        const ms = await navigator.mediaDevices.getUserMedia({
+            audio: {
+                echoCancellation: { ideal: true },
+                noiseSuppression: { ideal: true },
+                autoGainControl: { ideal: true },
+            },
+            video: true,
+        });
+        streamRef.current = ms;
+
+        if (userVideoRef.current) {
+            userVideoRef.current.srcObject = ms;
+        }
+
+        const ctx = new AudioContext({ sampleRate: TARGET_SAMPLE_RATE });
+        captureContextRef.current = ctx;
+
+        const source = ctx.createMediaStreamSource(ms);
+        const processor = ctx.createScriptProcessor(PROCESSOR_BUFFER_SIZE, 1, 1);
+        processorRef.current = processor;
+
+        processor.onaudioprocess = (e) => {
+            if (!isStreamingRef.current || isPaused) return;
+            const inputData = e.inputBuffer.getChannelData(0);
+            const int16 = float32ToInt16(inputData);
+            const base64 = arrayBufferToBase64(int16.buffer as ArrayBuffer);
+            sendAudioChunk(base64);
+        };
+
+        source.connect(processor);
+        processor.connect(ctx.destination);
+    }, [sendAudioChunk, isPaused]);
+
+    // ── Session lifecycle ────────────────────────────────────────────────────
+
+    const closeSonicSession = useCallback(async () => {
+        if (sessionRenewTimerRef.current) {
+            clearTimeout(sessionRenewTimerRef.current);
+            sessionRenewTimerRef.current = null;
+        }
+
+        if (sonicSessionIdRef.current) {
+            try {
+                await fetch('/api/sonic/audio', {
+                    method: 'DELETE',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sessionId: sonicSessionIdRef.current }),
+                });
+            } catch {
+                // Best effort
+            }
+        }
+
+        sseAbortRef.current?.abort();
+        isStreamingRef.current = false;
+        sonicSessionIdRef.current = '';
+    }, []);
+
+    const getSystemPrompt = useCallback(() => {
+        const stageExtra = stagePromptRef.current ? `\n\nCurrent interview stage instructions:\n${stagePromptRef.current}` : '';
+        return `You are a professional technical interviewer conducting a real-time voice interview. Ask one clear question at a time, listen carefully to the candidate's response, and follow up naturally. Keep your responses concise and conversational.${stageExtra}`;
+    }, []);
+
+    const renewSession = useCallback(async () => {
+        console.log('Renewing Nova Sonic session (approaching 8-min limit)...');
+        await closeSonicSession();
+        const newSid = crypto.randomUUID();
+        await startSSEStream(newSid, getSystemPrompt());
+    }, [closeSonicSession, startSSEStream, getSystemPrompt]);
 
     const initRealtime = useCallback(async () => {
         if (isConnected) return;
 
         try {
-            const ms = await navigator.mediaDevices.getUserMedia({
-                audio: true,
-                video: true
-            });
-            streamRef.current = ms;
-
-            if (userVideoRef.current) {
-                userVideoRef.current.srcObject = ms;
-            }
-
-            // Setup MediaRecorder for VAD
-            const mediaRecorder = new MediaRecorder(ms, { mimeType: 'audio/webm' });
-            mediaRecorderRef.current = mediaRecorder;
-
-            mediaRecorder.ondataavailable = (e) => {
-                if (e.data.size > 0) {
-                    audioChunksRef.current.push(e.data);
-                }
-            };
-
-            mediaRecorder.onstop = async () => {
-                const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/wav' });
-                audioChunksRef.current = [];
-                await sendAudioToSonic(audioBlob);
-                // Restart recording if session still active
-                if (isConnected && !isPaused) {
-                    setTimeout(() => mediaRecorder.start(), 500);
-                }
-            };
-
-            // Simple VAD logic using Web Audio API
-            const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-            audioContextRef.current = audioCtx;
-            const source = audioCtx.createMediaStreamSource(ms);
-            const analyser = audioCtx.createAnalyser();
-            analyser.fftSize = 256;
-            source.connect(analyser);
-
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
-            let silenceStart = Date.now();
-            let isSpeaking = false;
-
-            const checkVAD = () => {
-                if (!isConnected || isPaused) return;
-                analyser.getByteFrequencyData(dataArray);
-                const volume = dataArray.reduce((a, b) => a + b) / dataArray.length;
-
-                if (volume > 20) { // Threshold for speaking
-                    if (!isSpeaking) {
-                        console.log('🎤 Speech started');
-                        isSpeaking = true;
-                        if (mediaRecorder.state === 'inactive') mediaRecorder.start();
-                    }
-                    silenceStart = Date.now();
-                } else {
-                    if (isSpeaking && Date.now() - silenceStart > 1500) { // 1.5s silence
-                        console.log('🔇 Speech stopped');
-                        isSpeaking = false;
-                        if (mediaRecorder.state === 'recording') mediaRecorder.stop();
-                    }
-                }
-                requestAnimationFrame(checkVAD);
-            };
-            checkVAD();
-
+            await startAudioCapture();
             setIsConnected(true);
             setHasStarted(true);
+            setAiStatus('listening');
 
+            const sid = crypto.randomUUID();
+            await startSSEStream(sid, getSystemPrompt());
         } catch (err: unknown) {
             console.error('Connection error:', err);
         }
-    }, [isConnected, isPaused, sendAudioToSonic]);
+    }, [isConnected, startAudioCapture, startSSEStream, getSystemPrompt]);
+
+    // ── Proctoring ───────────────────────────────────────────────────────────
+
+    const handleMalpracticeTermination = useCallback(async () => {
+        setStage('terminated');
+        setAiStatus('speaking');
+        await closeSonicSession();
+        if (processorRef.current) processorRef.current.disconnect();
+        if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+        setIsConnected(false);
+        setIsMicActive(false);
+    }, [closeSonicSession]);
+
+    const handleGazeViolation = useCallback(() => {
+        if (stage !== 'interview') return;
+        setGazeViolations((prev: number) => {
+            const newCount = prev + 1;
+            setShowGazeWarning(true);
+            setTimeout(() => setShowGazeWarning(false), 3000);
+            if (newCount > 5) handleMalpracticeTermination();
+            return newCount;
+        });
+    }, [stage, handleMalpracticeTermination]);
+
+    // ── Controls ─────────────────────────────────────────────────────────────
+
+    const togglePause = useCallback(() => {
+        setIsPaused((prev: boolean) => {
+            const newState = !prev;
+            if (streamRef.current) {
+                streamRef.current.getAudioTracks().forEach(track => { track.enabled = !newState; });
+            }
+            return newState;
+        });
+    }, []);
 
     const stopSession = useCallback(async () => {
-        // Close media streams first
-        if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
-        if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+        await closeSonicSession();
+        if (processorRef.current) processorRef.current.disconnect();
+        if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+        if (captureContextRef.current) captureContextRef.current.close().catch(() => {});
+        if (playbackContextRef.current) playbackContextRef.current.close().catch(() => {});
         setIsConnected(false);
 
-        // Save transcript and generate insights
         setIsSavingTranscript(true);
-
         try {
             if (transcriptMessages.length > 0 && sessionId) {
-                // Format transcript with metadata for better analysis
                 const formattedTranscript = {
                     session_id: sessionId,
                     interview_start: transcriptMessages[0]?.timestamp || new Date().toISOString(),
@@ -320,23 +475,19 @@ export default function InterviewPage() {
                         role: msg.role,
                         content: msg.content,
                         timestamp: msg.timestamp,
-                        duration_from_start: new Date(msg.timestamp).getTime() - new Date(transcriptMessages[0]?.timestamp || msg.timestamp).getTime()
+                        duration_from_start: new Date(msg.timestamp).getTime() - new Date(transcriptMessages[0]?.timestamp || msg.timestamp).getTime(),
                     })),
                     metadata: {
                         user_messages: transcriptMessages.filter(m => m.role === 'user').length,
                         assistant_messages: transcriptMessages.filter(m => m.role === 'assistant').length,
-                        total_duration_ms: new Date().getTime() - new Date(transcriptMessages[0]?.timestamp || new Date().toISOString()).getTime()
-                    }
+                        total_duration_ms: new Date().getTime() - new Date(transcriptMessages[0]?.timestamp || new Date().toISOString()).getTime(),
+                    },
                 };
 
-                // Save transcript to S3
                 const saveResponse = await fetch('/api/save-transcript', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: sessionId,
-                        transcript: formattedTranscript,
-                    }),
+                    body: JSON.stringify({ session_id: sessionId, transcript: formattedTranscript }),
                 });
 
                 if (!saveResponse.ok) {
@@ -344,104 +495,87 @@ export default function InterviewPage() {
                     throw new Error(errorData.error || 'Failed to save transcript');
                 }
 
-                // Poll summary_table for insights (Lambda is triggered by S3 event)
-                const maxPollAttempts = 60; // 5 minutes max
                 let pollAttempts = 0;
+                const maxPollAttempts = 60;
                 let insightsGenerated = false;
 
                 while (pollAttempts < maxPollAttempts && !insightsGenerated) {
-                    await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
-
+                    await new Promise(r => setTimeout(r, 5000));
                     try {
                         const insightsResponse = await fetch('/api/get-insights', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ session_id: sessionId }),
                         });
-
                         if (insightsResponse.ok) {
-                            const insightsData = await insightsResponse.json();
-                            if (insightsData.insights && insightsData.analysis_status === 'COMPLETED') {
+                            const data = await insightsResponse.json();
+                            if (data.insights && data.analysis_status === 'COMPLETED') {
                                 insightsGenerated = true;
                                 break;
                             }
                         }
-                    } catch (pollError) {
-                        console.error("Error polling for insights:", pollError);
+                    } catch {
+                        // transient
                     }
-
                     pollAttempts++;
                 }
 
                 setIsSavingTranscript(false);
-                // Redirect to results page
                 router.push('/results');
             } else {
                 setIsSavingTranscript(false);
-                // Redirect to results page
                 router.push('/results');
             }
         } catch (error: unknown) {
-            console.error("Error in completion process:", error);
+            console.error('Error in completion process:', error);
             setIsSavingTranscript(false);
-            // Redirect to results page even if there was an error
             router.push('/results');
         }
-    }, [router, sessionId, transcriptMessages]);
+    }, [closeSonicSession, router, sessionId, transcriptMessages]);
 
     const restartInterview = useCallback(async () => {
-        // Close current connection
-        if (mediaRecorderRef.current) {
-            mediaRecorderRef.current.stop();
-            mediaRecorderRef.current = null;
-        }
-        if (streamRef.current) {
-            streamRef.current.getTracks().forEach(track => track.stop());
-            streamRef.current = null;
-        }
+        await closeSonicSession();
+        if (processorRef.current) processorRef.current.disconnect();
+        if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+        if (captureContextRef.current) captureContextRef.current.close().catch(() => {});
+        flushAudioQueue();
 
-        // Reset state
         setIsConnected(false);
         setHasStarted(false);
         setIsPaused(false);
         setTranscriptMessages([]);
-        setTranscriptionErrors([]);
-        setStage('interview'); // Go back to interview start
+        setStage('interview');
         setGazeViolations(0);
         currentAssistantMessageRef.current = null;
         setCurrentAssistantMessage(null);
         setAiStatus('listening');
         setTimeLeft(TOTAL_TIME);
+        stagePromptRef.current = '';
 
-        // Re-initialize connection
         await initRealtime();
-    }, [initRealtime, TOTAL_TIME]);
+    }, [closeSonicSession, flushAudioQueue, initRealtime, TOTAL_TIME]);
+
+    // ── Effects ──────────────────────────────────────────────────────────────
 
     useEffect(() => {
         if (sessionId && !isLoadingSession) initRealtime();
         return () => {
-            if (mediaRecorderRef.current) mediaRecorderRef.current.stop();
-            if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+            closeSonicSession();
+            if (processorRef.current) processorRef.current.disconnect();
+            if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [sessionId, isLoadingSession]);
 
+    // Timer
     useEffect(() => {
-        if (isConnected && !hasStarted && stage === 'interview') {
-            const timer = setTimeout(() => startInterview(), 1500);
-            return () => clearTimeout(timer);
-        }
-    }, [isConnected, hasStarted, stage, startInterview]);
-
-    // Timer Logic
-    useEffect(() => {
-        let interval: NodeJS.Timeout;
+        let interval: ReturnType<typeof setInterval>;
         if (isConnected && !isPaused && timeLeft > 0) {
             interval = setInterval(() => {
                 setTimeLeft((prev: number) => {
                     if (prev <= 1) {
                         clearInterval(interval);
-                        stopSession(); // Auto-end session
+                        stopSession();
                         return 0;
                     }
                     return prev - 1;
@@ -451,45 +585,29 @@ export default function InterviewPage() {
         return () => clearInterval(interval);
     }, [isConnected, isPaused, timeLeft, stopSession]);
 
-    // Stage change detection - fetch new prompt when stage changes
+    // Stage change -> fetch new prompt and store for next session renewal
     useEffect(() => {
         if (!isConnected) return;
-
         const currentStage = getCurrentInterviewStage();
         const stageName = currentStage?.name.toLowerCase() || 'introduction';
-
-        // Only trigger if stage actually changed
         if (stageName === currentInterviewStageName) return;
 
-        console.log(`📊 Stage changed: ${currentInterviewStageName} → ${stageName}`);
         setCurrentInterviewStageName(stageName);
 
-        // Fetch new stage prompt from API
         const fetchStagePrompt = async () => {
             try {
                 const response = await fetch('/api/get-stage-prompt', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        session_id: sessionId,
-                        stage: stageName
-                    }),
+                    body: JSON.stringify({ session_id: sessionId, stage: stageName }),
                 });
-
-                if (!response.ok) {
-                    console.error('Failed to fetch stage prompt:', await response.text());
-                    return;
-                }
-
+                if (!response.ok) return;
                 const data = await response.json();
-                console.log(`✓ Received ${stageName} prompt, updating session...`);
-
-                // Nova Sonic handles prompt updates differently than OpenAI Data channel.
-                // We'll just update the instructions which will be used in the next speech turn.
-                // You might want to store this in a ref or state.
-
-            } catch (error) {
-                console.error('Error fetching stage prompt:', error);
+                if (data.prompt) {
+                    stagePromptRef.current = data.prompt;
+                }
+            } catch {
+                // non-critical
             }
         };
 
@@ -497,11 +615,15 @@ export default function InterviewPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [timeLeft, isConnected, sessionId]);
 
+    // ── Render helpers ───────────────────────────────────────────────────────
+
     const formatTime = (seconds: number) => {
         const mins = Math.floor(seconds / 60);
         const secs = seconds % 60;
         return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
     };
+
+    // ── Terminated view ──────────────────────────────────────────────────────
 
     if (stage === 'terminated') {
         return (
@@ -520,8 +642,8 @@ export default function InterviewPage() {
                         </div>
                         <button
                             onClick={() => {
-                                const sessionId = localStorage.getItem('session_id');
-                                router.push(`/results/${sessionId}`);
+                                const sid = localStorage.getItem('session_id');
+                                router.push(`/results/${sid}`);
                             }}
                             className="w-full py-4 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-colors"
                         >
@@ -532,6 +654,8 @@ export default function InterviewPage() {
             </main>
         );
     }
+
+    // ── Saving view ──────────────────────────────────────────────────────────
 
     if (isSavingTranscript) {
         return (
@@ -553,6 +677,8 @@ export default function InterviewPage() {
         );
     }
 
+    // ── Main interview view ──────────────────────────────────────────────────
+
     const currentStage = getCurrentInterviewStage();
     const progressPercent = ((TOTAL_TIME - timeLeft) / TOTAL_TIME) * 100;
 
@@ -562,7 +688,6 @@ export default function InterviewPage() {
             {stage === 'interview' && !isLoadingSession && (
                 <GazeTracker
                     isActive={stage === 'interview'}
-
                     onGazeViolation={handleGazeViolation}
                     videoRef={userVideoRef}
                 />
@@ -570,7 +695,6 @@ export default function InterviewPage() {
 
             {/* Top Navigation & Agenda Seeker */}
             <nav className="h-24 bg-slate-900 border-b border-slate-800 flex flex-col justify-between shrink-0 z-50">
-                {/* Header Content */}
                 <div className="flex-1 flex items-center justify-between px-6">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-500/20">
@@ -579,7 +703,6 @@ export default function InterviewPage() {
                         <span className="font-bold text-lg tracking-tight text-slate-100">Interview<span className="text-blue-500">AI</span></span>
                     </div>
 
-                    {/* Timer */}
                     <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-1">Time Remaining</span>
                         <span className={`text-2xl font-mono font-bold ${timeLeft < 60 ? 'text-red-500 animate-pulse' : 'text-slate-200'}`}>
@@ -587,7 +710,6 @@ export default function InterviewPage() {
                         </span>
                     </div>
 
-                    {/* Controls */}
                     <div className="flex items-center gap-4">
                         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border ${isConnected ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
                             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-500'}`} />
@@ -604,27 +726,21 @@ export default function InterviewPage() {
 
                 {/* Agenda Seeker Bar */}
                 <div className="relative h-2 bg-slate-800 w-full group">
-                    {/* Progress Fill */}
                     <div
                         className="absolute top-0 left-0 h-full bg-gradient-to-r from-blue-600 to-cyan-400 transition-all duration-1000 ease-linear"
                         style={{ width: `${progressPercent}%` }}
                     />
-
-                    {/* Stage Markers */}
                     {interviewStages.map((s, idx) => (
                         <div
                             key={idx}
                             className="absolute top-0 h-full border-l border-slate-900/50 flex flex-col items-start pt-3"
                             style={{ left: `${s.start * 100}%` }}
                         >
-                            <span className={`text-[10px] font-bold uppercase tracking-wider pl-1 transform -translate-y-[2px] transition-colors ${currentStage?.name === s.name ? 'text-blue-400' : 'text-slate-600'
-                                }`}>
+                            <span className={`text-[10px] font-bold uppercase tracking-wider pl-1 transform -translate-y-[2px] transition-colors ${currentStage?.name === s.name ? 'text-blue-400' : 'text-slate-600'}`}>
                                 {s.name}
                             </span>
                         </div>
                     ))}
-
-                    {/* Current Position Thumb */}
                     <div
                         className="absolute top-1/2 -mt-1.5 w-3 h-3 bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)] transform -translate-x-1/2 z-10 transition-all duration-1000 ease-linear"
                         style={{ left: `${progressPercent}%` }}
@@ -636,9 +752,7 @@ export default function InterviewPage() {
             <div className="flex-1 flex overflow-hidden">
                 {/* LEFT PANEL: AI & Transcript */}
                 <div className="w-1/2 bg-slate-900 border-r border-slate-800 relative flex flex-col p-6">
-                    {/* AI Avatar Focus Area */}
                     <div className="flex-1 flex flex-col items-center justify-center min-h-0 relative">
-                        {/* Status Label */}
                         <div className="absolute top-0 left-0 px-3 py-1 bg-slate-800 rounded-full border border-slate-700 text-xs font-medium text-slate-400 mb-8 z-10">
                             {aiStatus === 'speaking' ? (
                                 <span className="flex items-center gap-2 text-blue-400">
@@ -661,22 +775,13 @@ export default function InterviewPage() {
                             )}
                         </div>
 
-                        {/* AI Avatar with Breathing Border */}
+                        {/* AI Avatar */}
                         <div className="relative">
-                            {/* Breathing Effect Ring */}
-                            <div className={`absolute -inset-4 rounded-full border-2 border-dashed border-blue-500/30 transition-all duration-1000 ${aiStatus === 'speaking' ? 'animate-spin-slow opacity-100 scale-110' : 'opacity-0 scale-90'
-                                }`} />
-                            <div className={`absolute -inset-1 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500 blur-md transition-all duration-500 ${aiStatus === 'speaking' ? 'opacity-70 scale-105 animate-pulse' : 'opacity-0 scale-100'
-                                }`} />
-
-                            <div className={`relative w-56 h-56 rounded-full overflow-hidden border-4 bg-slate-800 shadow-2xl transition-colors duration-300 ${aiStatus === 'speaking' ? 'border-blue-500' : 'border-slate-700'
-                                }`}>
+                            <div className={`absolute -inset-4 rounded-full border-2 border-dashed border-blue-500/30 transition-all duration-1000 ${aiStatus === 'speaking' ? 'animate-spin-slow opacity-100 scale-110' : 'opacity-0 scale-90'}`} />
+                            <div className={`absolute -inset-1 rounded-full bg-gradient-to-r from-blue-600 to-cyan-500 blur-md transition-all duration-500 ${aiStatus === 'speaking' ? 'opacity-70 scale-105 animate-pulse' : 'opacity-0 scale-100'}`} />
+                            <div className={`relative w-56 h-56 rounded-full overflow-hidden border-4 bg-slate-800 shadow-2xl transition-colors duration-300 ${aiStatus === 'speaking' ? 'border-blue-500' : 'border-slate-700'}`}>
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                    src="/images/avatar.png"
-                                    alt="AI"
-                                    className="w-full h-full object-cover"
-                                />
+                                <img src="/images/avatar.png" alt="AI" className="w-full h-full object-cover" />
                                 {isPaused && (
                                     <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center">
                                         <Pause className="w-12 h-12 text-white" />
@@ -686,28 +791,23 @@ export default function InterviewPage() {
                         </div>
                     </div>
 
-                    {/* Transcript Overlay / Bottom Section */}
+                    {/* Transcript */}
                     <div className={`mt-6 transition-all duration-500 ease-in-out flex flex-col ${showTranscript ? 'h-64' : 'h-12'}`}>
                         <div className="flex items-center justify-between mb-2 shrink-0">
                             <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Live Transcript</h3>
-                            <button
-                                onClick={() => setShowTranscript(!showTranscript)}
-                                className="text-xs text-blue-400 hover:text-blue-300 font-medium"
-                            >
+                            <button onClick={() => setShowTranscript(!showTranscript)} className="text-xs text-blue-400 hover:text-blue-300 font-medium">
                                 {showTranscript ? 'Hide' : 'Show'}
                             </button>
                         </div>
-
                         {showTranscript && (
                             <div className="flex-1 bg-slate-950/50 rounded-xl border border-slate-800 p-4 overflow-y-auto space-y-3 shadow-inner">
                                 {transcriptMessages.length === 0 && !currentAssistantMessage ? (
                                     <p className="text-slate-600 text-sm text-center py-4 italic">Conversation will appear here...</p>
                                 ) : (
                                     <>
-                                        {transcriptMessages.slice(-5).map((msg, i) => (
-                                            <div key={i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                                                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed ${msg.role === 'user' ? 'bg-blue-600/20 text-blue-100 border border-blue-500/20' : 'bg-slate-800 text-slate-300 border border-slate-700'
-                                                    }`}>
+                                        {transcriptMessages.slice(-8).map((msg, i) => (
+                                            <div key={msg.id ?? i} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                                                <div className={`max-w-[85%] px-3 py-2 rounded-lg text-sm leading-relaxed ${msg.role === 'user' ? 'bg-blue-600/20 text-blue-100 border border-blue-500/20' : 'bg-slate-800 text-slate-300 border border-slate-700'}`}>
                                                     {msg.content}
                                                 </div>
                                             </div>
@@ -716,7 +816,7 @@ export default function InterviewPage() {
                                             <div className="flex justify-start">
                                                 <div className="max-w-[85%] px-3 py-2 rounded-lg text-sm bg-slate-800 text-slate-300 border border-slate-700 animate-pulse">
                                                     {currentAssistantMessage.content}
-                                                    <span className="inline-block w-1.5 h-3 ml-1 bg-blue-400 animate-blink aligns-middle" />
+                                                    <span className="inline-block w-1.5 h-3 ml-1 bg-blue-400 animate-blink align-middle" />
                                                 </div>
                                             </div>
                                         )}
@@ -729,15 +829,8 @@ export default function InterviewPage() {
 
                 {/* RIGHT PANEL: User Video & Proctoring */}
                 <div className="w-1/2 bg-black relative flex flex-col">
-                    {/* User Video Container */}
                     <div id="user-video-container" className="flex-1 w-full h-full relative overflow-hidden bg-slate-950">
-                        <video
-                            ref={userVideoRef}
-                            autoPlay
-                            playsInline
-                            muted
-                            className="w-full h-full object-cover transform scale-x-[-1]"
-                        />
+                        <video ref={userVideoRef} autoPlay playsInline muted className="w-full h-full object-cover transform scale-x-[-1]" />
                         {!streamRef.current && (
                             <div className="absolute inset-0 flex items-center justify-center text-slate-700">
                                 <span className="text-sm">Initializing Camera...</span>
@@ -745,7 +838,6 @@ export default function InterviewPage() {
                         )}
                     </div>
 
-                    {/* Proctoring Warning Overlay */}
                     {showGazeWarning && (
                         <div className="absolute top-6 right-6 z-50 animate-in slide-in-from-right fade-in duration-300">
                             <div className="bg-red-500 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-4 border border-red-400">
@@ -760,20 +852,17 @@ export default function InterviewPage() {
                         </div>
                     )}
 
-                    {/* Controls Overlay on User Side */}
                     <div className="absolute bottom-8 left-0 right-0 flex items-center justify-center px-8 z-20">
                         <div className="bg-slate-900/80 backdrop-blur-md border border-slate-700 p-2 rounded-2xl flex gap-2 shadow-2xl">
                             <button
                                 onClick={togglePause}
-                                className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${isPaused ? 'bg-amber-500 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                                    }`}
+                                className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${isPaused ? 'bg-amber-500 text-white' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
                                 title={isPaused ? "Resume" : "Pause"}
                             >
                                 {isPaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5" />}
                             </button>
                             <button
-                                className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${isMicActive ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-red-500/20 text-red-400'
-                                    }`}
+                                className={`w-12 h-12 flex items-center justify-center rounded-xl transition-all ${isMicActive ? 'bg-slate-800 text-slate-300 hover:bg-slate-700' : 'bg-red-500/20 text-red-400'}`}
                             >
                                 {isMicActive ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
                             </button>
@@ -788,7 +877,6 @@ export default function InterviewPage() {
                     </div>
                 </div>
             </div>
-
         </main>
     );
 }
