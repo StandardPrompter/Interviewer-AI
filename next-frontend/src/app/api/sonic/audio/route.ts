@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   getSession,
   deleteSession,
+  enqueuePendingAudio,
   audioInputEvent,
   contentEndEvent,
   promptEndEvent,
@@ -26,7 +27,8 @@ export async function POST(req: NextRequest) {
 
     const session = getSession(sessionId);
     if (!session) {
-      return NextResponse.json({ error: "Session not found" }, { status: 404 });
+      enqueuePendingAudio(sessionId, audio);
+      return NextResponse.json({ ok: true, pending: true }, { status: 202 });
     }
     if (session.closed) {
       return NextResponse.json({ error: "Session is closed" }, { status: 410 });

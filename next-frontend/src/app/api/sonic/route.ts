@@ -23,7 +23,9 @@ import {
   textContentStartEvent,
   textInputEvent,
   contentEndEvent,
+  audioInputEvent,
   audioContentStartEvent,
+  drainPendingAudio,
 } from "@/lib/sonic-session";
 
 const MODEL_ID = "amazon.nova-2-sonic-v1:0";
@@ -84,6 +86,7 @@ export async function POST(req: NextRequest) {
   }
   const promptName = randomUUID();
   const systemContentName = randomUUID();
+  const kickoffContentName = randomUUID();
   const audioContentName = randomUUID();
 
   const session: SessionState = {
@@ -103,7 +106,20 @@ export async function POST(req: NextRequest) {
     yield textInputEvent(promptName, systemContentName, systemPrompt);
     yield contentEndEvent(promptName, systemContentName);
 
+    // Kick off the first interviewer question immediately so the UI is responsive
+    // even before the candidate starts speaking.
+    yield textContentStartEvent(promptName, kickoffContentName, "USER");
+    yield textInputEvent(
+      promptName,
+      kickoffContentName,
+      "Start the interview now with one short introductory question."
+    );
+    yield contentEndEvent(promptName, kickoffContentName);
+
     yield audioContentStartEvent(promptName, audioContentName);
+    for (const base64Audio of drainPendingAudio(sessionId)) {
+      yield audioInputEvent(promptName, audioContentName, base64Audio);
+    }
 
     while (!session.closed) {
       if (session.queue.length > 0) {
@@ -130,6 +146,8 @@ export async function POST(req: NextRequest) {
 
   (async () => {
     try {
+      sseWrite({ type: "ready", sessionId });
+
       const command = new InvokeModelWithBidirectionalStreamCommand({
         modelId: MODEL_ID,
         body: inputStream(),
@@ -171,7 +189,12 @@ export async function POST(req: NextRequest) {
 
       sseWrite({ type: "done" });
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : "Unknown error";
+      const message =
+        err instanceof Error
+          ? err.message
+          : typeof err === "object" && err !== null && "message" in err
+            ? String((err as { message?: unknown }).message ?? "Unknown error")
+            : "Unknown error";
       console.error("Nova 2 Sonic stream error:", err);
       sseWrite({ type: "error", message });
     } finally {

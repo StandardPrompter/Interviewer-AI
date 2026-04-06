@@ -39,12 +39,17 @@ export interface SessionState {
 
 type SonicGlobal = typeof globalThis & {
   __sonicSessions?: Map<string, SessionState>;
+  __pendingSonicAudio?: Map<string, string[]>;
 };
 
 const sonicGlobal = globalThis as SonicGlobal;
 const sessions = sonicGlobal.__sonicSessions ?? new Map<string, SessionState>();
 if (!sonicGlobal.__sonicSessions) {
   sonicGlobal.__sonicSessions = sessions;
+}
+const pendingAudio = sonicGlobal.__pendingSonicAudio ?? new Map<string, string[]>();
+if (!sonicGlobal.__pendingSonicAudio) {
+  sonicGlobal.__pendingSonicAudio = pendingAudio;
 }
 
 export function getSession(sessionId: string): SessionState | undefined {
@@ -61,6 +66,18 @@ export function deleteSession(sessionId: string): void {
 
 export function sessionCount(): number {
   return sessions.size;
+}
+
+export function enqueuePendingAudio(sessionId: string, base64Audio: string): void {
+  const queue = pendingAudio.get(sessionId) ?? [];
+  queue.push(base64Audio);
+  pendingAudio.set(sessionId, queue);
+}
+
+export function drainPendingAudio(sessionId: string): string[] {
+  const queue = pendingAudio.get(sessionId) ?? [];
+  pendingAudio.delete(sessionId);
+  return queue;
 }
 
 // ── Event builders ───────────────────────────────────────────────────────────
